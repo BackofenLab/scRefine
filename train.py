@@ -89,41 +89,41 @@ def main():
             optimizer.step()
 
             # Logging
-            if (batch_idx + 1) % 100 == 0:
+            if (batch_idx + 1) % 1000 == 0:
                 print(
                     f"Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx+1}/{len(dataloader)}], Loss: {loss.item():.4f}"
                 )
                 # log metrics to wandb
                 wandb.log({"epoch": epoch, "step": batch_idx, "loss": loss.item()})
 
-            # Save the model
-            if (epoch + 1) % eval_every == 0:
-                # Validation loop with validation loss and accuracy
-                val_loss = 0
-                correct = 0
-                total = 0
-                model.eval()
-                with torch.no_grad():
-                    for val_inputs, val_targets in val_dataloader:
-                        val_inputs = val_inputs.to(device)
-                        val_targets = val_targets.to(device)
-                        val_outputs = model(val_inputs)
-                        val_loss += criterion(val_outputs, val_targets)
-                        _, predicted = torch.max(val_outputs.data, 1)
-                        total += val_targets.size(0)
-                        correct += (predicted == val_targets).sum().item()
+        # Validation loop
+        if (epoch + 1) % eval_every == 0:
+            val_loss = 0
+            correct = 0
+            total = 0
+            model.eval()
+            with torch.no_grad():
+                for val_inputs, val_targets in val_dataloader:
+                    val_inputs = val_inputs.to(device)
+                    val_targets = val_targets.to(device)
+                    val_outputs = model(val_inputs)
+                    val_loss += criterion(val_outputs, val_targets)
+                    _, predicted = torch.max(val_outputs.data, 1)
+                    total += val_targets.size(0)
+                    correct += (predicted == val_targets).sum().item()
 
-                    val_loss /= len(val_dataset)
-                    print(
-                        f"Val. Loss: {val_loss.item():.4f}, Val. Accuracy: {100*correct/total:.2f}%"
-                    )
-                    wandb.log(
-                        {
-                            "val_loss": val_loss.item(),
-                            "val_accuracy": 100 * correct / total,
-                        }
-                    )
-                model.train()
+                val_loss /= len(val_dataset)
+                print(
+                    f"Val. Loss: {val_loss.item():.4f}, Val. Accuracy: {100*correct/total:.2f}%"
+                )
+                wandb.log(
+                    {
+                        "val_loss": val_loss.item(),
+                        "val_accuracy": 100 * correct / total,
+                        "epoch": epoch,
+                    }
+                )
+            model.train()
 
     # Save the final model
     torch.save(model.state_dict(), f"{experiment_dir}/model.pth")
