@@ -1,0 +1,12 @@
+# Ignore common files
+.DS_Store
+Thumbs.db
+
+# Ignore some folders
+/data
+/exp
+/wandb
+
+.cpython-*
+*.pyc
+*.log
