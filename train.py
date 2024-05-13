@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from models.classifier import Classifier
+from models.classifier2 import Classifier
 from dataset.singlecell import SingleCellDataset
 import wandb
 import logging
@@ -13,13 +13,13 @@ logger = logging.getLogger("Simple-Classifier-Train")
 def main():
 
     # Set experiment configurations
-    cuda_id = 0
+    cuda_id = 1
     device = torch.device(f"cuda:{cuda_id}" if torch.cuda.is_available() else "cpu")
     seed = 42
     np.random.seed(seed)
     torch.manual_seed(seed)
     hidden_size = 1024
-    learning_rate = 0.001
+    learning_rate = 0.0001
     batch_size = 32
     num_epochs = 100
     eval_every = 10
@@ -38,7 +38,7 @@ def main():
         # track hyperparameters and run metadata
         config={
             "learning_rate": learning_rate,
-            "architecture": "simple-classifier",
+            "architecture": "simple-classifier-3-layers",
             "dataset": "train90",
             "epochs": num_epochs,
             "batch_size": batch_size,
