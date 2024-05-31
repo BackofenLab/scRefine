@@ -1,9 +1,10 @@
 import scanpy as sc
 import celltypist
-import celltypist.annotate
 import sklearn
 
-celltypist.models.models_path = "/home/lagandua/projects/sven/celltypist/.cache"
+celltypist.models.models_path = (
+    "/home/lagandua/projects/sven/pineapple/celltypist/.cache"
+)
 import numpy as np
 import os
 from time import time
@@ -67,6 +68,7 @@ def train():
         mode="prob match",
         p_thres=0.5,
         use_GPU=True,
+        over_clustering_resolution=len(set(adata.obs[labels_name])),
     )
     adata_pred = predictions.to_adata(insert_prob=True)
     adata_pred.write(f"{experiment_dir}/pred_global.h5ad")
@@ -112,6 +114,7 @@ def train():
         mode="prob match",
         p_thres=0.5,
         use_GPU=True,
+        over_clustering_resolution=len(set(adata[subset_flag].obs[labels_name])),
     )
     adata_pred_subset = predictions.to_adata(insert_prob=True)
     adata_pred_subset.write(f"{experiment_dir}/subset_pred_global.h5ad")
