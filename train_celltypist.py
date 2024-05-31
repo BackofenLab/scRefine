@@ -68,7 +68,7 @@ def train():
         mode="prob match",
         p_thres=0.5,
         use_GPU=True,
-        over_clustering_resolution=len(set(adata.obs[labels_name])),
+        over_cluster_resolution=len(set(adata.obs[labels_name])),
     )
     adata_pred = predictions.to_adata(insert_prob=True)
     adata_pred.write(f"{experiment_dir}/pred_global.h5ad")
@@ -114,7 +114,7 @@ def train():
         mode="prob match",
         p_thres=0.5,
         use_GPU=True,
-        over_clustering_resolution=len(set(adata[subset_flag].obs[labels_name])),
+        over_cluster_resolution=len(set(adata[subset_flag].obs[labels_name])),
     )
     adata_pred_subset = predictions.to_adata(insert_prob=True)
     adata_pred_subset.write(f"{experiment_dir}/subset_pred_global.h5ad")
