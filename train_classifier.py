@@ -1,11 +1,13 @@
 import numpy as np
 import torch
-from models.classifier2 import Classifier
+from models.classifier3 import Classifier
 from dataset.singlecell import SingleCellDataset
+from sklearn.metrics import classification_report
 import wandb
 import logging
-from time import time
+import time
 import os
+import json
 
 logger = logging.getLogger("Simple-Classifier-Train")
 
@@ -13,7 +15,7 @@ logger = logging.getLogger("Simple-Classifier-Train")
 def main():
 
     # Set experiment configurations
-    cuda_id = 1
+    cuda_id = 0
     device = torch.device(f"cuda:{cuda_id}" if torch.cuda.is_available() else "cpu")
     seed = 42
     np.random.seed(seed)
@@ -21,14 +23,36 @@ def main():
     hidden_size = 1024
     learning_rate = 0.0001
     batch_size = 32
-    num_epochs = 100
+    num_epochs = 10
     eval_every = 10
+    train_data_name = "train_high_50"
+    val_data_name = "val_high_50"
 
     # Experiment directory based on timestamp
     root_dir = os.path.dirname(os.path.abspath(__file__))
-    experiment_dir = f"{root_dir}/exp/classifier/{str(int(time()))}"
+    current_time = time.localtime()
+    current_date_str = time.strftime(
+        "%Y-%m-%d", current_time
+    )  # Current date in YYYY-MM-DD format
+    current_time_str = time.strftime(
+        "%H-%M-%S", current_time
+    )  # Current time in HH:MM:SS format
+    experiment_dir = f"{root_dir}/exp/classifier/{current_date_str}/{current_time_str}/"
     os.makedirs(experiment_dir, exist_ok=True)
 
+    # Hyperparameters
+    config = {
+        "learning_rate": learning_rate,
+        "architecture": "simple-classifier-3-layers",
+        "dataset": train_data_name,
+        "epochs": num_epochs,
+        "batch_size": batch_size,
+        "hidden_size": hidden_size,
+        "criteria": "CrossEntropyLoss",
+        "optimizer": "Adam",
+        "experiment_dir": experiment_dir,
+        "seed": seed,
+    }
     # Initialize wandb
     wandb.init(
         # set the wandb project where this run will be logged
@@ -36,22 +60,21 @@ def main():
         # entity is specified by the username
         entity="acl21",
         # track hyperparameters and run metadata
-        config={
-            "learning_rate": learning_rate,
-            "architecture": "simple-classifier-3-layers",
-            "dataset": "train90",
-            "epochs": num_epochs,
-            "batch_size": batch_size,
-            "hidden_size": hidden_size,
-            "criteria": "CrossEntropyLoss",
-            "optimizer": "Adam",
-            "experiment_dir": experiment_dir,
-        },
+        config=config,
     )
+    # Save hyperparameters to json file
+    with open(f"{experiment_dir}/config.json", "w") as f:
+        json.dump(config, f)
 
     # Load the dataset
-    train_dataset = SingleCellDataset(data_path=f"{root_dir}/data/train.npz")
-    val_dataset = SingleCellDataset(data_path=f"{root_dir}/data/val.npz")
+    train_dataset = SingleCellDataset(
+        data_path=f"{root_dir}/data/{train_data_name}.npz"
+    )
+    val_dataset = SingleCellDataset(data_path=f"{root_dir}/data/{val_data_name}.npz")
+
+    # Save label to index mapping
+    with open(f"{experiment_dir}/label_to_index.json", "w") as f:
+        json.dump(train_dataset.label_to_index, f)
 
     # Define the model
     input_size = train_dataset.data.shape[-1]
@@ -102,6 +125,8 @@ def main():
             correct = 0
             total = 0
             model.eval()
+            pred_labels = []
+            true_labels = []
             with torch.no_grad():
                 for val_inputs, val_targets in val_dataloader:
                     val_inputs = val_inputs.to(device)
@@ -111,6 +136,8 @@ def main():
                     _, predicted = torch.max(val_outputs.data, 1)
                     total += val_targets.size(0)
                     correct += (predicted == val_targets).sum().item()
+                    pred_labels.extend(predicted.cpu().numpy().tolist())
+                    true_labels.extend(val_targets.cpu().numpy().tolist())
 
                 val_loss /= len(val_dataset)
                 print(
@@ -123,6 +150,15 @@ def main():
                         "epoch": epoch,
                     }
                 )
+                # Save the classification report in a text file
+                report = classification_report(
+                    true_labels,
+                    pred_labels,
+                    target_names=list(val_dataset.label_to_index.keys()),
+                )
+                with open(f"{experiment_dir}/cls_report_{epoch+1}.txt", "w") as f:
+                    f.write(report)
+
             model.train()
 
     # Save the final model

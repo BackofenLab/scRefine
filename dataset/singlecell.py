@@ -14,9 +14,6 @@ class SingleCellDataset(Dataset):
             label: index for index, label in enumerate(set(self.labels))
         }
         self.label_indices = [self.label_to_index[label] for label in self.labels]
-        # self.label_one_hot = torch.nn.functional.one_hot(
-        #     torch.tensor(self.label_indices)
-        # )
 
     def __len__(self):
         return len(self.data)
