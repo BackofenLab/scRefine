@@ -1,3 +1,7 @@
+"""
+Code directly taken from https://github.com/nicola-decao/s-vae-pytorch/
+"""
+
 import torch
 import numpy as np
 import scipy.special
