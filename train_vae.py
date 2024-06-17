@@ -52,14 +52,14 @@ def main():
         "seed": seed,
     }
     # Initialize wandb
-    # wandb.init(
-    #     # set the wandb project where this run will be logged
-    #     project="pineapple",
-    #     # entity is specified by the username
-    #     entity="acl21",
-    #     # track hyperparameters and run metadata
-    #     config=config,
-    # )
+    wandb.init(
+        # set the wandb project where this run will be logged
+        project="pineapple",
+        # entity is specified by the username
+        entity="acl21",
+        # track hyperparameters and run metadata
+        config=config,
+    )
     # Save hyperparameters to json file
     with open(f"{experiment_dir}/config.json", "w") as f:
         json.dump(config, f)
@@ -126,15 +126,15 @@ def main():
                     f"Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx+1}/{len(dataloader)}], Loss: {loss.item():.4f}, Recon Loss: {recon_loss.item():.4f}, KL Div: {kl_div.item():.4f}"
                 )
                 # log metrics to wandb
-                # wandb.log(
-                #     {
-                #         "epoch": epoch,
-                #         "step": batch_idx,
-                #         "loss": loss.item(),
-                #         "recon_loss": recon_loss.item(),
-                #         "kl_div": kl_div.item(),
-                #     }
-                # )
+                wandb.log(
+                    {
+                        "epoch": epoch,
+                        "step": batch_idx,
+                        "loss": loss.item(),
+                        "recon_loss": recon_loss.item(),
+                        "kl_div": kl_div.item(),
+                    }
+                )
 
     # Save the final model
     torch.save(model.state_dict(), f"{experiment_dir}/model.pth")
