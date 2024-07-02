@@ -38,13 +38,13 @@ def main():
     current_time_str = time.strftime(
         "%H-%M-%S", current_time
     )  # Current time in HH:MM:SS format
-    experiment_dir = f"{root_dir}/exp/vae/{current_date_str}/{current_time_str}/"
+    experiment_dir = f"{root_dir}/exp/vae-toy/{current_date_str}/{current_time_str}/"
     os.makedirs(experiment_dir, exist_ok=True)
 
     # Hyperparameters
     config = {
         "learning_rate": learning_rate,
-        "architecture": "scphere-vae",
+        "architecture": "vae-toy",
         "dataset": train_data_name,
         "epochs": num_epochs,
         "batch_size": batch_size,
