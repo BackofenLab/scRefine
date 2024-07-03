@@ -8,7 +8,7 @@ from torch.distributions.normal import Normal
 import numpy as np
 
 
-class SCPHERE(nn.Module):
+class VAE(nn.Module):
     def __init__(
         self,
         input_dim=2,
@@ -20,12 +20,12 @@ class SCPHERE(nn.Module):
         batch_invariant=False,
         **kwargs
     ) -> None:
-        super(SCPHERE, self).__init__()
+        super(VAE, self).__init__()
 
         if encoder_layer is None:
-            encoder_layer = [128, 64, 32]
+            encoder_layer = [2048, 1024]
         if decoder_layer is None:
-            decoder_layer = [32, 128]
+            decoder_layer = [1024, 2048]
 
         self.input_dim = input_dim
         self.latent_dim = latent_dim
@@ -52,10 +52,7 @@ class SCPHERE(nn.Module):
         # Build Latent
         if self.distribution == "normal":
             self.fc_mu = nn.Linear(encoder_layer[-1], latent_dim)
-            self.fc_var = nn.Linear(encoder_layer[-1], latent_dim)
-        elif self.distribution == "vmf":
-            self.fc_mu = nn.Linear(encoder_layer[-1], latent_dim)
-            self.fc_var = nn.Linear(encoder_layer[-1], 1)
+            self.fc_logvar = nn.Linear(encoder_layer[-1], latent_dim)
         else:
             raise ValueError("Unknown distribution")
 
@@ -72,76 +69,31 @@ class SCPHERE(nn.Module):
                 )
             )
             in_channels = h_dim
-
+        modules.append(
+            nn.Sequential(
+                nn.Linear(in_channels, input_dim),
+            )
+        )
         self.decoder = nn.Sequential(*modules)
-        self.fc_logits = nn.Linear(decoder_layer[-1], input_dim)
 
     def encode(self, input: Tensor) -> List[Tensor]:
         result = self.encoder(input)
         result = torch.flatten(result, start_dim=1)
+        mu = self.fc_mu(result)
+        logvar = self.fc_logvar(result)
 
-        if self.distribution == "normal":
-            mu = self.fc_mu(result)
-            var = F.softplus(self.fc_var(result))
-        elif self.distribution == "vmf":
-            mu = self.fc_mu(result)
-            mu = mu / mu.norm(p=2, dim=-1, keepdim=True)
-            # the `+ 1` to prevent collapsing behaviors
-            var = F.softplus(self.fc_var(result)) + 1
-        else:
-            raise NotImplemented
-
-        return mu, var
+        return mu, logvar
 
     def decode(self, z: Tensor) -> Tensor:
-        result = self.decoder(z)
-        result = self.fc_logits(result)
-        return result
+        return self.decoder(z)
 
-    def reparameterize(self, mu: Tensor, var: Tensor) -> Tensor:
-        if self.distribution == "normal":
-            q_z = Normal(mu, var)
-            p_z = Normal(torch.zeros_like(mu), torch.ones_like(var))
-        elif self.distribution == "vmf":
-            q_z = VonMisesFisher(mu, var)
-            p_z = HypersphericalUniform(self.latent_dim - 1, device=mu.device)
-        else:
-            raise NotImplemented
-
-        return q_z, p_z
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
 
     def forward(self, input: Tensor, **kwargs) -> List[Tensor]:
-        mu, var = self.encode(input)
-        q_z, p_z = self.reparameterize(mu, var)
-        z = q_z.rsample()
-        return (mu, var), (q_z, p_z), z, self.decode(z)
-
-
-def log_likelihood(model, x, n=10):
-    """
-    :param model: model object
-    :param optimizer: optimizer object
-    :param n: number of MC samples
-    :return: MC estimate of log-likelihood
-    """
-
-    mu, var = model.encode(x.reshape(-1, 784))
-    q_z, p_z = model.reparameterize(mu, var)
-    z = q_z.rsample(torch.Size([n]))
-    x_mb_ = model.decode(z)
-
-    log_p_z = p_z.log_prob(z)
-
-    if model.distribution == "normal":
-        log_p_z = log_p_z.sum(-1)
-
-    log_p_x_z = -nn.BCEWithLogitsLoss(reduction="none")(
-        x_mb_, x.reshape(-1, 784).repeat((n, 1, 1))
-    ).sum(-1)
-
-    log_q_z_x = q_z.log_prob(z)
-
-    if model.distribution == "normal":
-        log_q_z_x = log_q_z_x.sum(-1)
-
-    return ((log_p_x_z + log_p_z - log_q_z_x).t().logsumexp(-1) - np.log(n)).mean()
+        mu, logvar = self.encode(input)
+        z = self.reparameterize(mu, logvar)
+        recon_input = self.decode(z)
+        return recon_input, mu, logvar

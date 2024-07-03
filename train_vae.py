@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from models.vae import SCPHERE
+from models.vae import VAE
 from dataset.singlecell import SingleCellDataset
 import wandb
 import logging
@@ -8,24 +8,26 @@ import time
 import os
 import json
 
-logger = logging.getLogger("SCPHERE-VAE-Train")
+logger = logging.getLogger("VAE-Train")
 
 
 def main():
 
     # Set experiment configurations
-    cuda_id = 0
+    cuda_id = 2
     device = torch.device(f"cuda:{cuda_id}" if torch.cuda.is_available() else "cpu")
     seed = 42
     np.random.seed(seed)
     torch.manual_seed(seed)
-    latent_dim = 32
+    latent_dim = 1024
     learning_rate = 0.0001
     batch_size = 32
-    num_epochs = 10
+    num_epochs = 50
     eval_every = 10
-    train_data_name = "train_high_50"
-    val_data_name = "val_high_50"
+    print_every = 500
+    kld_weight = 0.0005
+    train_data_name = "sven_classes_new/train_high_90_min2K"
+    val_data_name = "sven_classes_new/val_high_10_min2K"
 
     # Experiment directory based on timestamp
     root_dir = os.path.dirname(os.path.abspath(__file__))
@@ -42,11 +44,12 @@ def main():
     # Hyperparameters
     config = {
         "learning_rate": learning_rate,
-        "architecture": "scphere-vae",
+        "architecture": "vae",
         "dataset": train_data_name,
         "epochs": num_epochs,
         "batch_size": batch_size,
-        "criteria": "BCEWithLogitsLoss",
+        "kl_div_weight": kld_weight,
+        "criteria": "MSELoss",
         "optimizer": "Adam",
         "experiment_dir": experiment_dir,
         "seed": seed,
@@ -76,15 +79,7 @@ def main():
 
     # Define the model
     input_size = train_dataset.data.shape[-1]
-    num_classes = len(train_dataset.label_to_index)
-    model = (
-        SCPHERE(input_size, latent_dim=latent_dim, distribution="vmf")
-        .to(device)
-        .float()
-    )
-
-    # Define the loss function
-    criterion = torch.nn.BCEWithLogitsLoss(reduction="none")
+    model = VAE(input_size, latent_dim=latent_dim).to(device).float()
 
     # Define the optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -93,9 +88,9 @@ def main():
     dataloader = torch.utils.data.DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True
     )
-    val_dataloader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=True
-    )
+    # val_dataloader = torch.utils.data.DataLoader(
+    #     val_dataset, batch_size=batch_size, shuffle=True
+    # )
 
     # Training loop
     for epoch in range(num_epochs):
@@ -106,24 +101,21 @@ def main():
             optimizer.zero_grad()
 
             # Forward pass
-            _, (q_z, p_z), _, data_recon = model(data)
-            recon_loss = criterion(data_recon, data).sum(-1).mean()
-            if model.distribution == "normal":
-                kl_div = torch.distributions.kl.kl_divergence(q_z, p_z).sum(-1).mean()
-            elif model.distribution == "vmf":
-                kl_div = torch.distributions.kl.kl_divergence(q_z, p_z).mean()
-            else:
-                raise NotImplemented
+            recon_data, mu, log_var = model(data)
+            recon_loss = torch.nn.functional.mse_loss(recon_data, data)
+            kl_div = torch.mean(
+                -0.5 * torch.sum(1 + log_var - mu**2 - log_var.exp(), dim=1), dim=0
+            )
 
             # Backward pass
-            loss = recon_loss + kl_div
+            loss = recon_loss + kld_weight * kl_div
             loss.backward()
             optimizer.step()
 
             # Logging
-            if (batch_idx + 1) % 1000 == 0:
+            if (batch_idx + 1) % print_every == 0:
                 print(
-                    f"Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx+1}/{len(dataloader)}], Loss: {loss.item():.4f}, Recon Loss: {recon_loss.item():.4f}, KL Div: {kl_div.item():.4f}"
+                    f"Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx+1}/{len(dataloader)}], Loss: {loss.item():.4f}, Recon Loss: {recon_loss.detach().item():.4f}, KL Div: {-kl_div.detach().item():.4f}"
                 )
                 # log metrics to wandb
                 wandb.log(
@@ -131,13 +123,13 @@ def main():
                         "epoch": epoch,
                         "step": batch_idx,
                         "loss": loss.item(),
-                        "recon_loss": recon_loss.item(),
-                        "kl_div": kl_div.item(),
+                        "recon_loss": recon_loss.detach().item(),
+                        "kl_div": -kl_div.detach().item(),
                     }
                 )
-
-    # Save the final model
-    torch.save(model.state_dict(), f"{experiment_dir}/model.pth")
+        if (epoch + 1) % eval_every == 0:
+            # Save the final model
+            torch.save(model.state_dict(), f"{experiment_dir}/model_{epoch}.pth")
 
 
 if __name__ == "__main__":

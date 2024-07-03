@@ -15,7 +15,7 @@ logger = logging.getLogger("Simple-Classifier-Train")
 def main():
 
     # Set experiment configurations
-    cuda_id = 0
+    cuda_id = 1
     device = torch.device(f"cuda:{cuda_id}" if torch.cuda.is_available() else "cpu")
     seed = 42
     np.random.seed(seed)
@@ -23,10 +23,11 @@ def main():
     hidden_size = 1024
     learning_rate = 0.0001
     batch_size = 32
-    num_epochs = 10
+    num_epochs = 30
     eval_every = 10
-    train_data_name = "train_high_50"
-    val_data_name = "val_high_50"
+    print_every = 1000
+    train_data_name = "sven_classes_new/train_high_90_min2K"
+    val_data_name = "sven_classes_new/val_high_10_min2K"
 
     # Experiment directory based on timestamp
     root_dir = os.path.dirname(os.path.abspath(__file__))
@@ -112,7 +113,7 @@ def main():
             optimizer.step()
 
             # Logging
-            if (batch_idx + 1) % 1000 == 0:
+            if (batch_idx + 1) % print_every == 0:
                 print(
                     f"Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx+1}/{len(dataloader)}], Loss: {loss.item():.4f}"
                 )

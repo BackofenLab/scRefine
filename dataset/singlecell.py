@@ -11,7 +11,7 @@ class SingleCellDataset(Dataset):
         self.genes = processed_data["genes"]
 
         self.label_to_index = {
-            label: index for index, label in enumerate(set(self.labels))
+            label: index for index, label in enumerate(sorted(set(self.labels)))
         }
         self.label_indices = [self.label_to_index[label] for label in self.labels]
 

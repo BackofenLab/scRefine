@@ -27,7 +27,6 @@ def main():
     print_every = 100
     kld_weight = 0.00025
     train_data_name = "toy/train_toy_2blobs"
-    # val_data_name = "toy/val_toy_2blobs"
 
     # Experiment directory based on timestamp
     root_dir = os.path.dirname(os.path.abspath(__file__))
