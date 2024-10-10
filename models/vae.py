@@ -2,10 +2,6 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from .types_ import *
-from distributions.von_mises_fisher import VonMisesFisher
-from distributions.hyperspherical_uniform import HypersphericalUniform
-from torch.distributions.normal import Normal
-import numpy as np
 
 
 class VAE(nn.Module):
@@ -22,10 +18,17 @@ class VAE(nn.Module):
     ) -> None:
         super(VAE, self).__init__()
 
+        # Use a larger network for larger input dimensions
         if encoder_layer is None:
-            encoder_layer = [2048, 1024]
+            if input_dim > 6500:
+                encoder_layer = [4096, 2048, 1024]
+            else:
+                encoder_layer = [2048, 1024]
         if decoder_layer is None:
-            decoder_layer = [1024, 2048]
+            if input_dim > 6500:
+                decoder_layer = [1024, 2048, 4096]
+            else:
+                decoder_layer = [1024, 2048]
 
         self.input_dim = input_dim
         self.latent_dim = latent_dim
@@ -97,3 +100,15 @@ class VAE(nn.Module):
         z = self.reparameterize(mu, logvar)
         recon_input = self.decode(z)
         return recon_input, mu, logvar
+
+    def loss_function(self, recon_x, x, mu, logvar, kld_weight=0.00025) -> dict:
+        recon_loss = F.mse_loss(recon_x, x)
+        kld_loss = torch.mean(
+            -0.5 * torch.sum(1 + logvar - mu**2 - logvar.exp(), dim=1), dim=0
+        )
+        loss = recon_loss + kld_weight * kld_loss
+        return {
+            "loss": loss,
+            "recon_loss": recon_loss.detach(),
+            "kld_loss": -kld_loss.detach(),
+        }

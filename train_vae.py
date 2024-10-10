@@ -14,7 +14,7 @@ logger = logging.getLogger("VAE-Train")
 def main():
 
     # Set experiment configurations
-    cuda_id = 2
+    cuda_id = 0
     device = torch.device(f"cuda:{cuda_id}" if torch.cuda.is_available() else "cpu")
     seed = 42
     np.random.seed(seed)
@@ -25,9 +25,11 @@ def main():
     num_epochs = 50
     eval_every = 10
     print_every = 500
-    kld_weight = 0.0005
-    train_data_name = "sven_classes_new/train_high_90_min2K"
-    val_data_name = "sven_classes_new/val_high_10_min2K"
+    kld_weight = 0.00025
+    train_data_name = "sven_classes/data_high_top_1000_genes"
+    # val_data_name = "sven_classes/val_high_10"
+    # train_data_name = "Predicted_labels_CellTypist/train_low_90"
+    # val_data_name = "Predicted_labels_CellTypist/val_low_10"
 
     # Experiment directory based on timestamp
     root_dir = os.path.dirname(os.path.abspath(__file__))
@@ -38,13 +40,16 @@ def main():
     current_time_str = time.strftime(
         "%H-%M-%S", current_time
     )  # Current time in HH:MM:SS format
-    experiment_dir = f"{root_dir}/exp/vae/{current_date_str}/{current_time_str}/"
+    experiment_dir = (
+        f"{root_dir}/exp/vae/{latent_dim}/{current_date_str}/{current_time_str}/"
+    )
     os.makedirs(experiment_dir, exist_ok=True)
 
     # Hyperparameters
     config = {
         "learning_rate": learning_rate,
         "architecture": "vae",
+        "latent_dim": latent_dim,
         "dataset": train_data_name,
         "epochs": num_epochs,
         "batch_size": batch_size,
@@ -71,7 +76,7 @@ def main():
     train_dataset = SingleCellDataset(
         data_path=f"{root_dir}/data/{train_data_name}.npz"
     )
-    val_dataset = SingleCellDataset(data_path=f"{root_dir}/data/{val_data_name}.npz")
+    # val_dataset = SingleCellDataset(data_path=f"{root_dir}/data/{val_data_name}.npz")
 
     # Save label to index mapping
     with open(f"{experiment_dir}/label_to_index.json", "w") as f:
@@ -101,30 +106,26 @@ def main():
             optimizer.zero_grad()
 
             # Forward pass
-            recon_data, mu, log_var = model(data)
-            recon_loss = torch.nn.functional.mse_loss(recon_data, data)
-            kl_div = torch.mean(
-                -0.5 * torch.sum(1 + log_var - mu**2 - log_var.exp(), dim=1), dim=0
-            )
+            recon_data, mu, logvar = model(data)
 
             # Backward pass
-            loss = recon_loss + kld_weight * kl_div
-            loss.backward()
+            loss_dict = model.loss_function(recon_data, data, mu, logvar)
+            loss_dict["loss"].backward()
             optimizer.step()
 
             # Logging
             if (batch_idx + 1) % print_every == 0:
                 print(
-                    f"Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx+1}/{len(dataloader)}], Loss: {loss.item():.4f}, Recon Loss: {recon_loss.detach().item():.4f}, KL Div: {-kl_div.detach().item():.4f}"
+                    f"Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx+1}/{len(dataloader)}], Loss: {loss_dict['loss'].item():.4f}, Recon Loss: {loss_dict['recon_loss'].item():.4f}, KLD Loss: {loss_dict['kld_loss'].item():.4f}"
                 )
                 # log metrics to wandb
                 wandb.log(
                     {
                         "epoch": epoch,
                         "step": batch_idx,
-                        "loss": loss.item(),
-                        "recon_loss": recon_loss.detach().item(),
-                        "kl_div": -kl_div.detach().item(),
+                        "loss": loss_dict["loss"].item(),
+                        "recon_loss": loss_dict["recon_loss"].item(),
+                        "kld_loss": loss_dict["kld_loss"].item(),
                     }
                 )
         if (epoch + 1) % eval_every == 0:
