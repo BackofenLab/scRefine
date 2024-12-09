@@ -14,7 +14,7 @@ logger = logging.getLogger("SimCLR-Train")
 def main():
 
     # Set experiment configurations
-    cuda_id = 1
+    cuda_id = 2
     device = torch.device(f"cuda:{cuda_id}" if torch.cuda.is_available() else "cpu")
     seed = 42
     np.random.seed(seed)
@@ -26,13 +26,18 @@ def main():
     eval_every = 10
     print_every = 500
     temperature = 0.5
-    # train_data_name = "sven_classes/data_high_top_10000_genes"
+    similarity_threshold = 0.25
+    # train_data_name = "sven_classes/data_high_top_10000_genes_sparse_markers"
     # val_data_name = "sven_classes/val_high_10"
-    # train_data_name = "Predicted_labels_CellTypist/t_cells/data_t_cells_top_10000_genes"
-    train_data_name = (
-        "Predicted_labels_CellTypist/data_low_top_10000_genes_sparse_markers"
-    )
+    # train_data_name = "t_cells/data_top_10000_genes_sparse_cyc_t_cellmarkers"
+    train_data_name = "Predicted_labels_CellTypist/data_top_10000_genes_sparse_naive_helper_t_cellmarkers"
     # val_data_name = "Predicted_labels_CellTypist/val_low_10"
+
+    # Pre-trained VAE-ZNB model path - markers data, only has 55 classes
+    # pretrained_model_path = "/home/lagandua/projects/sven/pineapple/exp/vae-zinb/1024/2024-11-02/17-44-02/model_49.pth"
+
+    # Full data, 91 classes
+    # pretrained_model_path = "/home/lagandua/projects/sven/pineapple/exp/vae-zinb/1024/2024-11-10/10-55-58/model_49.pth"
 
     # Experiment directory based on timestamp
     root_dir = os.path.dirname(os.path.abspath(__file__))
@@ -61,7 +66,9 @@ def main():
         "optimizer": "Adam",
         "experiment_dir": experiment_dir,
         "seed": seed,
-        "comment": "Using marker genes for positive pairs",
+        "comment": "Using marker genes for positive mask",
+        "similarity_threshold": similarity_threshold,
+        # "pretrained_model_path": pretrained_model_path,
     }
     # Initialize wandb
     wandb.init(
@@ -90,6 +97,9 @@ def main():
     input_size = train_dataset.data.shape[-1]
     model = Encoder(input_size, latent_dim=latent_dim).to(device).float()
 
+    # Load the encoder from pre-trained VAE-ZNB
+    # model.load_state_dict(torch.load(pretrained_model_path), strict=False)
+
     # Define the optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -114,7 +124,9 @@ def main():
             # Forward pass
             z = model(data)
 
-            loss = nt_xent_loss(z, data, marker_indices, temperature)
+            loss = nt_xent_loss(
+                z, data, marker_indices, temperature, similarity_threshold
+            )
 
             # Backward pass
             loss.backward()
@@ -139,7 +151,7 @@ def main():
 
 
 # SimCLR-like loss: NT-Xent Loss (with ground truth labels for positive pairs)
-def nt_xent_loss(z, data, marker_indices, temperature=0.5):
+def nt_xent_loss(z, data, marker_indices, temperature=0.5, similarity_threshold=0.75):
     batch_size = z.shape[0]
 
     # Normalize the representations
@@ -155,8 +167,8 @@ def nt_xent_loss(z, data, marker_indices, temperature=0.5):
     data_filtered = torch.nn.functional.normalize(data[:, marker_indices], dim=1)
     positive_mask = data_filtered @ data_filtered.T
 
-    # Set positive pairs to 1 and the rest to 0
-    positive_mask = positive_mask > 0.75
+    # Get hard positive pairs with a threshold
+    positive_mask = positive_mask > similarity_threshold
 
     # Mask out the diagonal (self-contrast, i.e., a sample shouldn't compare to itself)
     mask = torch.eye(batch_size, dtype=torch.bool).to(similarity_matrix.device)

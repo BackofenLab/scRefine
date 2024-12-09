@@ -8,8 +8,8 @@ Double-positive thymocytes:Double-positive thymocytes
 ETP:ETP
 Early MK:Early MK
 Endothelial cells:Endothelial cells
-Epithelial Cells:Epithelial cells
-Erythroid Cells:Erythrocytes
+Epithelial cells:Epithelial cells
+Erythroid cells:Erythrocytes
 Erythroid:Early erythroid,Mid erythroid,Late erythroid
 Fibroblasts:Fibroblasts
 Granulocytes:Granulocytes,Neutrophils
@@ -18,7 +18,7 @@ ILC:CD16+ NK cells,CD16- NK cells,ILC,ILC1,ILC2,ILC3,NK cells,Transitional NK
 ILC precursor:ILC precursor
 MNP:MNP
 Macrophages:Macrophages,Hofbauer cells,Kidney-resident macrophages,Kupffer cells
-Mast Cells:Mast cells
+Mast cells:Mast cells
 Megakaryocytes precursor:Megakaryocyte precursor
 Megakaryocytes/platelets:Megakaryocytes/platelets
 Mono-mac:Mono-mac
@@ -27,6 +27,6 @@ Monocytes:Monocytes,Classical monocytes,Non-classical monocytes
 Myelocytes:Myelocytes
 Plasma cells:Plasma cells
 Promyelocytes:Promyelocytes
-T cells:T cells,gamma-delta T cells,CD8a/a,CD8a/b(entry),MAIT cells,Cytotoxic T cells,Tem/Effector cytotoxic T cells,Memory CD4+ cytotoxic T cells,Tcm/Naive cytotoxic T cells,Tcm/Naive helper T cells,Memory CD4+ cytotoxic T cells,NKT cells,Regulatory T cells,T(agonist),Treg(diff),Tem/Effector helper T cells,Tem/Effector helper T cells PD1+,Follicular helper T cells,Type 17 helper T cells,Type 1 helper T cells,Helper T cells
+T cells:T cells,gamma-delta T cells,CD8a/a,CD8a/b(entry),MAIT cells,Cytotoxic T cells,Tem/Effector cytotoxic T cells,Memory CD4+ cytotoxic T cells,Tcm/Naive cytotoxic T cells,Tcm/Naive helper T cells,NKT cells,Regulatory T cells,T(agonist),Treg(diff),Tem/Effector helper T cells,Tem/Effector helper T cells PD1+,Follicular helper T cells,Type 17 helper T cells,Type 1 helper T cells,Helper T cells
 pDC:pDC
 pDC precursor:pDC precursor
