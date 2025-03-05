@@ -10,6 +10,12 @@ import json
 
 logger = logging.getLogger("SimCLR-Train")
 
+"""
+SimCLR training -> see DNABerts for details
+
+
+
+"""
 
 def main():
 
@@ -134,7 +140,17 @@ def main():
 
 
 # SimCLR-like loss: NT-Xent Loss (with ground truth labels for positive pairs)
+
+
+
 def nt_xent_loss(z, labels, temperature=0.5):
+    """
+    z: latent dimension
+    labels: labels of points in latent dimension
+    temperature: parameter to scale the similarity matrix
+    
+    """
+
     batch_size = z.shape[0]
 
     # Normalize the representations
