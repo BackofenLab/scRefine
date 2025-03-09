@@ -112,3 +112,97 @@ class VAE(nn.Module):
             "recon_loss": recon_loss.detach(),
             "kld_loss": -kld_loss.detach(),
         }
+        
+        
+
+class Encoder2(nn.Module):
+    def __init__(self, input_dim, latent_dim, n_hidden=128, n_layers=1, ln = False):
+        super().__init__()
+        if ln: 
+            layers = [nn.LayerNorm(input_dim)]
+            layers += [nn.Linear(input_dim, n_hidden), nn.ReLU()]
+        else:
+            layers = [nn.Linear(input_dim, n_hidden), nn.ReLU()]
+
+
+        for _ in range(n_layers - 1):
+            if ln: layers += [nn.LayerNorm(n_hidden)]
+            layers += [nn.Linear(n_hidden, n_hidden), nn.ReLU()]
+
+
+        self.encoder = nn.Sequential(*layers)
+        self.mu = nn.Linear(n_hidden, latent_dim)
+        self.var = nn.Linear(n_hidden, latent_dim)
+
+    def forward(self, x):
+        h = self.encoder(x)
+        return self.mu(h), torch.exp(self.var(h))
+
+class Decoder2(nn.Module):
+    def __init__(self, latent_dim, output_dim, n_hidden=128, n_layers=1, ln = False):
+        super().__init__()
+        
+        if ln:
+            layers  = [nn.LayerNorm(latent_dim)]
+            layers += [nn.Linear(latent_dim, n_hidden), nn.ReLU()]
+        else:
+            layers = [nn.Linear(latent_dim, n_hidden), nn.ReLU()]
+            
+        for _ in range(n_layers - 1):
+            if ln: layers += [nn.LayerNorm(n_hidden)]
+            layers += [nn.Linear(n_hidden, n_hidden), nn.ReLU()]
+
+
+        layers.append(nn.Linear(n_hidden, output_dim))
+        self.decoder = nn.Sequential(*layers)
+    
+    def forward(self, z, library):
+        return torch.exp(self.decoder(z) + library)
+
+class VAE_simple(nn.Module):
+    def __init__(self, n_input, n_latent=10, n_hidden=128, n_layers=1, encode_covariates=False, ln = False):
+        super().__init__()
+        self.encode_covariates = encode_covariates
+        input_dim = n_input + 1 if encode_covariates else n_input
+        
+        self.z_encoder = Encoder2(input_dim, n_latent, n_hidden, n_layers, ln)
+        self.l_encoder = Encoder2(input_dim, 1, n_hidden, 1, ln)  # Library size encoder
+        self.decoder = Decoder2(n_latent, n_input, n_hidden, n_layers)
+        
+    def forward(self, x, covariates=None):
+        if self.encode_covariates and covariates is not None:
+            #print(x.size())
+            #print(covariates.size())
+            
+            covariates = torch.unsqueeze(covariates, dim = -1)
+            #print(covariates.size())
+            x = torch.cat([x, covariates], dim=-1)
+        
+        z_mu, z_var = self.z_encoder(x)
+        qz = Normal(z_mu, torch.sqrt(z_var))
+        z = qz.rsample()
+        
+        l_mu, l_var = self.l_encoder(x)
+        ql = Normal(l_mu, torch.sqrt(l_var))
+        library = ql.rsample()
+        
+        px_rate = self.decoder(z, library)
+        
+        return {
+            "z_mu": z_mu, "z": z, "qz": qz, "ql": ql, "library": library, "px_rate": px_rate
+        }
+    
+    def loss(self, x, output, kl_weight = 0.001):
+        qz, ql, px_rate = output["qz"], output["ql"], output["px_rate"]
+        
+        # KL divergence
+        pz = Normal(torch.zeros_like(qz.loc), torch.ones_like(qz.scale))
+        pl = Normal(torch.zeros_like(ql.loc), torch.ones_like(ql.scale))
+        kl_z = kl_divergence(qz, pz).sum(dim=-1)
+        kl_l = kl_divergence(ql, pl).sum(dim=-1)
+        
+        reconst_loss = nn.MSELoss()(px_rate, x)
+
+        loss = (reconst_loss + (kl_z + kl_l)*kl_weight).mean()
+        # Total loss
+        return {"loss": loss, "recon_loss": reconst_loss.item(), "kld_loss1": kl_z.mean() * kl_weight, "kld_loss2": kl_l.mean() * kl_weight, "distance": 0}
