@@ -113,7 +113,42 @@ class VAE(nn.Module):
             "kld_loss": -kld_loss.detach(),
         }
         
+class ZINB(nn.Module):
+    def __init__(self, eps=1e-8):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, x, mu, theta, pi):
+        eps = self.eps
+        softplus_theta = torch.nn.functional.softplus(theta)
+
+
+        mu = torch.clamp(mu, min=eps, max=1e6)
+        softplus_theta = torch.clamp(softplus_theta, min=eps, max=1e6)
+        pi = torch.clamp(pi, min=eps, max=1 - eps)
+
+        log_theta_eps = torch.log(softplus_theta + eps)
+        log_mu_eps = torch.log(mu + eps)
+
+        nb_case = (
+            torch.lgamma(softplus_theta + x)
+            - torch.lgamma(softplus_theta)
+            - torch.lgamma(x + 1)
+            + softplus_theta * (log_theta_eps + log_mu_eps - log_theta_eps)
+            + x * (log_mu_eps - log_theta_eps + log_mu_eps)
+        )
+        log_nb_prob = nb_case - (softplus_theta + x) * torch.log1p(mu / softplus_theta + eps)
+
+
+        log_nb_prob = torch.clamp(log_nb_prob, min=-50, max=50)
+
+        log_zero_prob = torch.log(pi + (1.0 - pi) * torch.exp(log_nb_prob) + eps)
+        log_nonzero_prob = torch.log(1.0 - pi + eps) + log_nb_prob
         
+        result = torch.where(x < eps, log_zero_prob, log_nonzero_prob)
+
+
+        return -torch.clamp(result, min=-50, max=50).sum(dim=-1).mean()
 
 class Encoder2(nn.Module):
     def __init__(self, input_dim, latent_dim, n_hidden=128, n_layers=1, ln = False):
