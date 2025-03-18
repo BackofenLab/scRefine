@@ -241,3 +241,68 @@ class VAE_simple(nn.Module):
         loss = (reconst_loss + (kl_z + kl_l)*kl_weight).mean()
         # Total loss
         return {"loss": loss, "recon_loss": reconst_loss.item(), "kld_loss1": kl_z.mean() * kl_weight, "kld_loss2": kl_l.mean() * kl_weight, "distance": 0}
+        
+        
+def embedding_distance_loss2(embeddings, indices, decay_factor=0.1, smoothness=1.0, dropout_prob=0.7):
+
+    group_0 = embeddings[indices == 0]
+    group_1 = embeddings[indices == 1]
+
+    dists_01 = torch.cdist(group_0, group_1, p=2)  
+    dists_10 = torch.cdist(group_1, group_0, p=2)  
+
+    # Smooth exponential decay using Softplus
+    weights_01 = torch.exp(-torch.nn.functional.softplus(smoothness * decay_factor * dists_01))
+    weights_10 = torch.exp(-torch.nn.functional.softplus(smoothness * decay_factor * dists_10))
+
+    # Clipping the weights
+    weights_01 = torch.clip(weights_01, 0, 5)
+    weights_10 = torch.clip(weights_10, 0, 5)
+
+    # Applying dropout
+    weights_01 = torch.nn.functional.dropout(weights_01, p=dropout_prob)
+    weights_10 = torch.nn.functional.dropout(weights_10, p=dropout_prob)
+
+
+    # Weighted mean distance
+    mean_dist_01 = torch.sum(dists_01 * weights_01) / torch.sum(weights_01)
+    mean_dist_10 = torch.sum(dists_10 * weights_10) / torch.sum(weights_10)
+
+    return (mean_dist_01 + mean_dist_10) / 2
+
+def embedding_distance_loss(embeddings, indices, decay_factor=0.1):
+
+
+
+    group_0 = embeddings[indices == 0]
+    group_1 = embeddings[indices == 1]
+    
+
+
+
+
+    #dists_01 = torch.cdist(group_0, group_1, p=2)  
+    #dists_10 = torch.cdist(group_1, group_0, p=2)  
+    
+    dists_01 = torch.cdist(group_0, group_1, p=2)  
+    dists_10 = torch.cdist(group_1, group_0, p=2)  
+
+
+    weights_01 = torch.exp(-decay_factor * dists_01)
+    weights_10 = torch.exp(-decay_factor * dists_10)
+
+    weights_01 = torch.clip(weights_01 , 0, 5)
+    weights_10 = torch.clip(weights_10 , 0, 5)
+
+
+    
+    ## add dropout
+    #weights_10 = torch.nn.functional.dropout(weights_10, p = 0.7)
+    #weights_01 = torch.nn.functional.dropout(weights_01, p = 0.7)
+    #return 0
+
+    mean_dist_01 = torch.sum(dists_01 * weights_01) / torch.sum(weights_01)
+    mean_dist_10 = torch.sum(dists_10 * weights_10) / torch.sum(weights_10)
+
+
+    return (mean_dist_01 + mean_dist_10) / 2
