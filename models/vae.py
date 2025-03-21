@@ -306,3 +306,27 @@ def embedding_distance_loss(embeddings, indices, decay_factor=0.1):
 
 
     return (mean_dist_01 + mean_dist_10) / 2
+
+def kl_divergence_gmm(q_pi, q_mu, q_sigma, p_mu, p_sigma, p_pi):
+    
+    batch_size = q_mu.shape[0]  
+
+    p_mu = p_mu.unsqueeze(0).expand(batch_size, -1, -1)  
+    p_sigma = p_sigma.unsqueeze(0).expand(batch_size, -1, -1)  
+
+    q_dist = Normal(q_mu, q_sigma)  
+
+    
+    p_mu = p_mu.squeeze()
+    p_sigma = p_sigma.squeeze()
+
+
+    p_dist = Normal(p_mu, p_sigma)  # p(z | c)
+
+    kl_z_per_component = kl_divergence(q_dist, p_dist).sum(dim=-1)  # (batch_size, num_components)
+    kl_z_per_component = kl_z_per_component.unsqueeze(dim=-1)
+    kl_z = (q_pi * kl_z_per_component).sum(dim=-1)  
+    p_pi = p_pi.unsqueeze(0).expand(batch_size, -1)  
+    kl_c = (q_pi * (q_pi.log() - p_pi.log())).sum(dim=-1)  # (batch_size,)
+
+    return kl_z + kl_c  
