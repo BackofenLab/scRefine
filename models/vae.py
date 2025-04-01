@@ -29,7 +29,7 @@ import os
 from pandas.api.types import CategoricalDtype
 from copy import deepcopy
 import collections
-
+from pyro.distributions.zero_inflated import ZeroInflatedNegativeBinomial
 
 
 class VAE(nn.Module):
