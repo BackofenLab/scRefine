@@ -8,13 +8,8 @@ import time
 import os
 import json
 
-logger = logging.getLogger("SimCLR-Train")
-
 """
 SimCLR training -> see DNABerts for details
-
-
-
 """
 
 def main():
@@ -153,13 +148,8 @@ def nt_xent_loss(z, labels, temperature=0.5):
 
     batch_size = z.shape[0]
 
-    # Normalize the representations
     z = torch.nn.functional.normalize(z, dim=1)
-
-    # Cosine similarity matrix between all elements in the batch
     similarity_matrix = torch.matmul(z, z.T)
-
-    # Scale the similarity matrix with the temperature
     similarity_matrix = similarity_matrix / temperature
 
     # Create a mask for positive pairs based on the ground truth labels
@@ -188,7 +178,6 @@ def nt_xent_loss(z, labels, temperature=0.5):
         positive_mask.sum(dim=1) + 1e-10
     )
 
-    # Loss is the mean negative log likelihood of the positive pairs
     loss = -positive_log_prob.mean()
 
     return loss
