@@ -419,7 +419,7 @@ class HVAE_Lightning(pl.LightningModule):
     
     def training_step(self, batch, batch_idx):
     
-        x,_,count, covariates = batch if self.encode_covariates else (batch, None)
+        x,_, covariates = batch if self.encode_covariates else (batch, None)
         output = self(x, covariates)
         loss_dict = self.compute_loss(x, output)
         self.log("train_loss", loss_dict["loss"], prog_bar=True)
@@ -514,9 +514,7 @@ class HVAE_Lightning7(pl.LightningModule):
 
         pz = Normal(torch.zeros_like(qz.loc), torch.ones_like(qz.scale))
         kl_z = kl_divergence(qz, pz).sum(dim=-1)       
-
         p_mu, p_sigma, p_pi = self.gmm_prior()
-
         kl_l = kl_divergence_gmm(l_pi, l_mu, l_var, p_mu, p_sigma, p_pi).mean()
         
         
@@ -536,8 +534,6 @@ class HVAE_Lightning7(pl.LightningModule):
             validate_args=False
             )
 
-
-
         zz = -zinb.log_prob(torch.nn.functional.relu(x).round()).sum(dim=-1)
         assert not torch.isinf(zz).any(), "inf detected in zinb data!"
         assert not torch.isnan(zz).any(), "NaN detected in zinb data!"
@@ -552,7 +548,7 @@ class HVAE_Lightning7(pl.LightningModule):
     
     def training_step(self, batch, batch_idx):
     
-        x,_,count, covariates, gene = batch if self.encode_covariates else (batch, None)
+        x,_, covariates, gene = batch if self.encode_covariates else (batch, None)
         x  = torch.clamp(x, max=10)
         output = self(x, gene, covariates)
 

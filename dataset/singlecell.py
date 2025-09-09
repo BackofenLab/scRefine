@@ -16,12 +16,15 @@ class SingleCellDataset(Dataset):
         gene_names = processed_data[gene_symbol]
         
         bin_indices = []
+        self.prediction_genes = 0
+        
         for gene_sym in gene_names:
             try:
                 relevant_int = list(gene_names).index(gene_sym)
                 relevant_data = self.data[:,relevant_int]
                 bin_data = np.expand_dims(create_bins(relevant_data, n_bins = 10),axis=-1)
                 bin_indices.append(bin_data)
+                self.prediction_genes = self.prediction_genes + 1
             except:
                 print("skipped: " + str(gene_sym))
                 
@@ -42,6 +45,15 @@ class SingleCellDataset(Dataset):
 
     def __len__(self):
         return len(self.data)
+
+    def return_size(self):
+        return np.shape(self.data)[0]
+        
+    def num_marker_genes(self):
+        return self.prediction_genes
+        
+    def return_num_batches(self):
+        return len(batch_dict.keys())
 
     def __getitem__(self, index):
         return (
