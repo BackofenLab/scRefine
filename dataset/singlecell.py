@@ -4,61 +4,30 @@ from torch.utils.data import Dataset
 
 
 class SingleCellDataset(Dataset):
-    def __init__(self, data_path, load_raw_indices=False):
-        processed_data = np.load(data_path, allow_pickle=True)
-        self.data = processed_data["data"]
-        self.labels = processed_data["labels"]
-        self.genes = processed_data["genes"]
-
-        if load_raw_indices:
-            self.raw_indices = processed_data["raw_indices"]
-
-        self.label_to_index = {
-            label: index for index, label in enumerate(sorted(set(self.labels)))
-        }
-        self.label_indices = [self.label_to_index[label] for label in self.labels]
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, index):
-        return (
-            self.data[index],
-            self.label_indices[index],
-        )  # , self.organ_indices[index]
-        
-        
-class SingleCellDataset2(Dataset):
-    def __init__(self, data_path, load_raw_indices=False):
+    def __init__(self, data_path, batch_dict, gene_names, dataset_symbol, label_symbols, data_symbol, gene_symbol, load_raw_indices=False):
 
         processed_data = np.load(data_path, allow_pickle=True)
-        self.return_count = 0
-        self.data = processed_data['data']
-        self.batch = processed_data['batch']
-        self.batch = [0 if a == "dataset1" else 1 for a in self.batch]
+        self.data = processed_data[data_symbol]
+        self.label = processed_data[label_symbols]
+        self.label = [str(l) for l in self.label]
+        self.batch = processed_data[dataset_symbol]
+        self.batch = [batch_dict[a] for a in self.batch]
+        
+        gene_names = processed_data[gene_symbol]
+        
+        bin_indices = []
+        for gene_sym in gene_names:
+            try:
+                relevant_int = list(gene_names).index(gene_sym)
+                relevant_data = self.data[:,relevant_int]
+                bin_data = np.expand_dims(create_bins(relevant_data, n_bins = 10),axis=-1)
+                bin_indices.append(bin_data)
+            except:
+                print("skipped: " + str(gene_sym))
+                
+        
+        self.bin_indices = np.concat(bin_indices, axis = -1)
 
-        labels = processed_data["label"]
-        labels = [str(l) for l in labels]
-        labels2 = processed_data["label2"]
-        labels2 = [str(l) for l in labels2]
-        mapping = {'pDCs': 'pDC'}
-        labels2 = [mapping[l] if l == 'pDCs' else l for l in labels2]
-        labels = [l if l != "nan" else labels2[enum] for enum, l in enumerate(labels)]
-        labels_low = processed_data["label_low"]
-        labels_low = [str(l) for l in labels_low]
-        labels_low = [l if l != "nan" else labels2[enum] for enum, l in enumerate(labels_low)]
-        label_curated = processed_data["label_curated"]
-        label_curated = [str(l) for l in label_curated]
-        label_curated = [l if l != "nan" else labels2[enum] for enum, l in enumerate(label_curated)]
-        label_predicted = processed_data["label_predicted"]
-        label_predicted = [str(l) for l in label_predicted]
-        label_predicted = [l if l != "nan" else labels2[enum] for enum, l in enumerate(label_predicted)]
-        label_cathegory = processed_data["label_cathegory"]
-        label_cathegory = [str(l) for l in label_cathegory]
-        label_cathegory = [l if l != "nan" else labels2[enum] for enum, l in enumerate(label_cathegory)]
-        
-        
-        self.label = np.array( [label + "+" + labels_low[enum] + "+" + label_curated[enum] + "+" + label_predicted[enum] + "+" + label_cathegory[enum] for enum, label in enumerate(labels)])
 
 
         if load_raw_indices:
@@ -69,16 +38,21 @@ class SingleCellDataset2(Dataset):
         }
 
         self.label_indices = [self.label_to_index[label] for label in self.batch]
-
+        
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, index):
-        self.return_count = self.return_count + 1
         return (
             self.data[index],
             self.label[index],
-            self.return_count,
-            self.batch[index]
-        ) 
+            self.batch[index],
+            self.bin_indices[index],
+        )
+        
+
+#batch_dict = {'Che_et_al':0, 'Durante_et_al':1, 'Lin_et_al':2, 'Lin_k_et_al':3, 'Rao_et_al':4,
+# 'Sathe_et_al':5, 'Wang_et_al':6, 'Zhang_et_al':7, 'liverAtlas':8}
+
+ #       gene_symbol = ["PTPRC", "CD2", "CD3D","CD3G","CD3E", "CD8A","CD8B", "CD4", "MZB1", "CD19", "MS4A1", "CD14", "FCGR3A", "FCGR1A", "ITGAM", "CD68", "SPP1", "IL3RA",  "C1QA", "TYROBP", "FCER1G", "CPA3",  "TPSAB1", "MS4A2", "KIT", "ACTA2", "THY1", "CRABP1", "VWF", "ENG", "CDH5", "VCAM1", "KRT19", "KRT8", "EPCAM", "ALB", "TF", "TTR", "MLANA", "TYRP1", "MITF", "PMEL", "FDCSP", "SPIB", "ASCL1", "CALCA", "CHGA", "CHGB", "TFF3","GRP", "CEACAM5", "CEACAM6", "SCGB2A2","ENO2","SSTR2"]
