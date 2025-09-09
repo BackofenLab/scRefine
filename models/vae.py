@@ -30,8 +30,13 @@ from pandas.api.types import CategoricalDtype
 from copy import deepcopy
 import collections
 from pyro.distributions.zero_inflated import ZeroInflatedNegativeBinomial
+import pytorch_lightning as pl
+import torch.optim as optim
+from torch.optim.lr_scheduler import StepLR
+from torch.distributions import Normal, kl_divergence
+from sklearn.preprocessing import LabelEncoder
 
-
+_identity = lambda x: x
         
         
 class ZINB(nn.Module):
@@ -122,19 +127,62 @@ def kl_divergence_gmm(q_pi, q_mu, q_sigma, p_mu, p_sigma, p_pi):
     return kl_z + kl_c  
     
 class FCLayers(nn.Module):
+    """A helper class to build fully-connected layers for a neural network.
+
+    Parameters
+    ----------
+    n_in
+        The dimensionality of the input
+    n_out
+        The dimensionality of the output
+    n_cat_list
+        A list containing, for each category of interest,
+        the number of categories. Each category will be
+        included using a one-hot encoding.
+    n_cont
+        The dimensionality of the continuous covariates
+    n_layers
+        The number of fully-connected hidden layers
+    n_hidden
+        The number of nodes per hidden layer
+    dropout_rate
+        Dropout rate to apply to each of the hidden layers
+    use_batch_norm
+        Whether to have `BatchNorm` layers or not
+    use_layer_norm
+        Whether to have `LayerNorm` layers or not
+    use_activation
+        Whether to have layer activation or not
+    bias
+        Whether to learn bias in linear layers or not
+    inject_covariates
+        Whether to inject covariates in each layer, or just the first (default).
+    activation_fn
+        Which activation function to use
+    """
 
     def __init__(
         self,
-        n_in, n_out,
-        n_cat_list: Iterable[int] = None, n_cont = 0, n_layers = 1,
-        n_hidden = 128, dropout_rate = 0.1, use_activation = True, inject_covariates = True,
-        activation_fn: nn.Module = nn.ReLU, use_layer_norm = False, use_batch_norm = True
+        n_in: int,
+        n_out: int,
+        n_cat_list = None,
+        n_cont: int = 0,
+        n_layers: int = 1,
+        n_hidden: int = 128,
+        dropout_rate: float = 0.1,
+        use_batch_norm: bool = True,
+        use_layer_norm: bool = False,
+        use_activation: bool = True,
+        bias: bool = True,
+        inject_covariates: bool = True,
+        activation_fn: nn.Module = nn.ReLU,
     ):
         super().__init__()
         self.inject_covariates = inject_covariates
         layers_dim = [n_in] + (n_layers - 1) * [n_hidden] + [n_out]
 
         if n_cat_list is not None:
+            # n_cat = 1 will be ignored
             self.n_cat_list = [n_cat if n_cat > 1 else 0 for n_cat in n_cat_list]
         else:
             self.n_cat_list = []
@@ -143,11 +191,27 @@ class FCLayers(nn.Module):
 
         self.fc_layers = nn.Sequential(
             collections.OrderedDict(
-                [(f"Layer {i}",nn.Sequential(nn.Linear(n_in + self.n_cov * self.inject_into_layer(i),n_out,bias=True,),
-                            nn.BatchNorm1d(n_out, momentum=0.01, eps=0.001) if use_batch_norm else None,
-                            nn.LayerNorm(n_out, elementwise_affine=False) if use_layer_norm else None,
+                [
+                    (
+                        f"Layer {i}",
+                        nn.Sequential(
+                            nn.Linear(
+                                n_in + self.n_cov * self.inject_into_layer(i),
+                                n_out,
+                                bias=bias,
+                            ),
+                            # non-default params come from defaults in original Tensorflow
+                            # implementation
+                            nn.BatchNorm1d(n_out, momentum=0.01, eps=0.001)
+                            if use_batch_norm
+                            else None,
+                            nn.LayerNorm(n_out, elementwise_affine=False)
+                            if use_layer_norm
+                            else None,
                             activation_fn() if use_activation else None,
-                            nn.Dropout(p=dropout_rate) if dropout_rate > 0 else None,),)
+                            nn.Dropout(p=dropout_rate) if dropout_rate > 0 else None,
+                        ),
+                    )
                     for i, (n_in, n_out) in enumerate(
                         zip(layers_dim[:-1], layers_dim[1:], strict=True)
                     )
@@ -155,28 +219,117 @@ class FCLayers(nn.Module):
             )
         )
 
-    def inject_into_layer(self, layer_num):
+    def inject_into_layer(self, layer_num) -> bool:
+        """Helper to determine if covariates should be injected."""
         user_cond = layer_num == 0 or (layer_num > 0 and self.inject_covariates)
         return user_cond
 
+    def set_online_update_hooks(self, hook_first_layer=True):
+        """Set online update hooks."""
+        self.hooks = []
 
-                    
+        def _hook_fn_weight(grad):
+            categorical_dims = sum(self.n_cat_list)
+            new_grad = torch.zeros_like(grad)
+            if categorical_dims > 0:
+                new_grad[:, -categorical_dims:] = grad[:, -categorical_dims:]
+            return new_grad
+
+        def _hook_fn_zero_out(grad):
+            return grad * 0
+
+        for i, layers in enumerate(self.fc_layers):
+            for layer in layers:
+                if i == 0 and not hook_first_layer:
+                    continue
+                if isinstance(layer, nn.Linear):
+                    if self.inject_into_layer(i):
+                        w = layer.weight.register_hook(_hook_fn_weight)
+                    else:
+                        w = layer.weight.register_hook(_hook_fn_zero_out)
+                    self.hooks.append(w)
+                    b = layer.bias.register_hook(_hook_fn_zero_out)
+                    self.hooks.append(b)
+
+    def forward(self, x: torch.Tensor, *cat_list: int, cont: torch.Tensor | None = None):
+        """Forward computation on ``x``.
+
+        Parameters
+        ----------
+        x
+            tensor of values with shape ``(n_in,)``
+        cat_list
+            list of category membership(s) for this sample
+        cont
+            tensor of continuous covariates with shape ``(n_cont,)``
+
+        Returns
+        -------
+        :class:`torch.Tensor`
+            tensor of shape ``(n_out,)``
+        """
+
+        one_hot_cat_list = []  # for generality in this list many idxs useless.
+        cont_list = [cont] if cont is not None else []
+        cat_list = cat_list or []
+
+        if len(self.n_cat_list) > len(cat_list):
+            raise ValueError("nb. categorical args provided doesn't match init. params.")
+        for n_cat, cat in zip(self.n_cat_list, cat_list, strict=False):
+            if n_cat and cat is None:
+                raise ValueError("cat not provided while n_cat != 0 in init. params.")
+            if n_cat > 1:  # n_cat = 1 will be ignored - no additional information
+                if cat.size(1) != n_cat:
+                    one_hot_cat = nn.functional.one_hot(cat.squeeze(-1), n_cat)
+                else:
+                    one_hot_cat = cat  # cat has already been one_hot encoded
+                one_hot_cat_list += [one_hot_cat]
+        cov_list = cont_list + one_hot_cat_list
+        for i, layers in enumerate(self.fc_layers):
+            for layer in layers:
+                if layer is not None:
+                    if isinstance(layer, nn.BatchNorm1d):
+                        if x.dim() == 3:
+                            if (
+                                x.device.type == "mps"
+                            ):  # TODO: remove this when MPS supports for loop.
+                                x = torch.cat(
+                                    [(layer(slice_x.clone())).unsqueeze(0) for slice_x in x], dim=0
+                                )
+                            else:
+                                x = torch.cat(
+                                    [layer(slice_x).unsqueeze(0) for slice_x in x], dim=0
+                                )
+                        else:
+                            x = layer(x)
+                    else:
+                        if isinstance(layer, nn.Linear) and self.inject_into_layer(i):
+                            if x.dim() == 3:
+                                cov_list_layer = [
+                                    o.unsqueeze(0).expand((x.size(0), o.size(0), o.size(1)))
+                                    for o in cov_list
+                                ]
+                            else:
+                                cov_list_layer = cov_list
+                            x = torch.cat((x, *cov_list_layer), dim=-1)
+                        x = layer(x)
+        return x
+
                     
                     
 class EncoderHVAE(nn.Module):
 
     def __init__(
         self,
-        n_input: int,
-        n_output: int,
-        n_cat_list: Iterable[int] = None,
-        n_layers: int = 1,
-        n_hidden: int = 128,
-        dropout_rate: float = 0.1,
-        distribution: str = "normal",
-        var_eps: float = 1e-4,
-        var_activation: Callable | None = None,
-        return_dist: bool = False,
+        n_input, n_output,
+        n_cat_list = None,
+        n_layers = 1,
+        n_hidden = 128,
+        dropout_rate = 0.1,
+        distribution = "normal",
+        var_eps = 1e-4,
+        var_activation = None,
+        return_dist = False,
         **kwargs,
     ):
         super().__init__()
@@ -205,12 +358,17 @@ class EncoderHVAE(nn.Module):
     def forward(self, x: torch.Tensor, *cat_list: int):
 
         q = self.encoder(x, *cat_list)
+
         q_m = self.mean_encoder(q)
+
         q_v = self.var_activation(self.var_encoder(q)) + self.var_eps
+
         dist = Normal(q_m, q_v.sqrt())
         latent = self.z_transformation(dist.rsample())
+
         if self.return_dist:
             return dist, latent
+
         return q_m, q_v, latent
         
         
@@ -218,7 +376,7 @@ class EncoderHVAE2(nn.Module):
 
 
     def __init__(self, n_input, n_output, n_cat_list = None, n_layers = 1, n_hidden = 128, dropout_rate = 0.1, distribution = "normal", var_eps = 1e-4, return_dist = False,
-    ):
+    var_activation = None):
         super().__init__()
 
         self.distribution = distribution
@@ -407,7 +565,7 @@ class HVAE_Lightning(pl.LightningModule):
             
             zinb = ZeroInflatedNegativeBinomial(
             total_count=px_r.clamp(min=1e-5),  
-            logits=torch.log(px_rate.clamp(min=1e-5)), )
+            logits=torch.log(px_rate.clamp(min=1e-5)), 
             gate= px_dropout,
             validate_args=False
             )
@@ -445,13 +603,13 @@ class HVAE_Lightning(pl.LightningModule):
         
         
 class HVAE_Lightning7(pl.LightningModule):
-    def __init__(self, n_input, n_latent=10, n_hidden=128, n_layers=1, encode_covariates=False, ln=False, kl_weight=0.001, lr=1e-3, n_batch = 9, num_components = 2, reconstruction_weight = 0.001, gene_factor = 0.5, prediction_genes = 18, random_assignment = False):
+    def __init__(self, n_input, n_latent=10, n_hidden=128, n_layers=1, encode_covariates=False, ln=False, kl_weight=0.001, lr=1e-3, n_batch = 9, num_components = 9, reconstruction_weight = 0.001, gene_factor = 0.5, prediction_genes = 18, random_assignment = False):
         super().__init__()
         self.save_hyperparameters()
         device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
         self.encode_covariates = encode_covariates
         input_dim = n_input + 20 if encode_covariates else n_input
-        self.random_assignment = False
+        self.random_assignment = random_assignment
         
         self.z_encoder = EncoderHVAE(input_dim, n_latent,n_layers = n_layers)
         self.l_encoder = EncoderHVAE2(n_latent, num_components, n_layers = n_layers)
@@ -500,9 +658,9 @@ class HVAE_Lightning7(pl.LightningModule):
         c = torch.multinomial(l_pi, num_samples=1).squeeze()
         
         
-        if self.random_assignment:
-            library = l_mu[torch.arange(len(c_int)), batch_labels] + \
-                l_var[torch.arange(len(c_int)), batch_labels] * torch.randn_like(l_var[:, 0])
+        if self.random_assignment == False:
+            library = l_mu[torch.arange(len(batch_labels)), batch_labels] + \
+                l_var[torch.arange(len(batch_labels)), batch_labels] * torch.randn_like(l_var[:, 0])
         else:
             library = l_mu[torch.arange(len(c)), c] + l_var[torch.arange(len(c)), c] * torch.randn_like(l_var[:, 0])
         

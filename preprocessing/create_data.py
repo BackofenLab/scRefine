@@ -44,7 +44,7 @@ def convert_object_to_int_with_nan(adata):
 
 
 
-def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name, query_name, samples_to_remove = None, test_size = 0.1, n_top_genes=10000, batch_key="dataset",layer = "counts"):
+def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name, query_name, samples_to_remove = None, test_size = 0.1, n_top_genes=10000, batch_key="batch",layer = "counts", flavor='seurat'):
 
     """
     Preprocess single-cell RNA-seq data for downstream analysis.
@@ -87,6 +87,7 @@ def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name
 
     gene_symbol = open(marker_gene_list).readlines()
     adata = sc.read(os.path.join(data_directory, dataset))
+    print(adata)
     
     if samples_to_remove != None: 
         adata = adata[~adata.obs['SampleID'].isin(samples_to_remove)]
@@ -97,8 +98,11 @@ def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name
 
 
     X_train, X_test = train_test_split(range(0,adata.shape[0]), test_size = test_size)
-    sc.pp.highly_variable_genes(adata, layer = layer, n_top_genes=n_top_genes, batch_key=batch_key, subset=False)
 
+    try:
+        sc.pp.highly_variable_genes(adata, flavor = flavor, layer = layer, n_top_genes=n_top_genes, batch_key=batch_key, subset=False)
+    except:
+        sc.pp.highly_variable_genes(adata, flavor = flavor, n_top_genes=n_top_genes, batch_key=batch_key, subset=False)
 
     adata_hvg = adata[:, adata.var['highly_variable']].copy()
     adata_hvg = adata_hvg.copy()
@@ -116,10 +120,13 @@ def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name
     adata_ref = adata[X_train].copy()
     adata_query = adata[X_test].copy()
 
-
-    adata_ref.write(filename= data_directory + ref_name)
+    print(data_directory + ref_name)
+    print(data_directory + query_name)
+    print(data_directory + full_name)
+    
+    #adata_ref.write(filename= data_directory + ref_name)
     adata_query.write(filename= data_directory + query_name)
-    adata.write(filename= data_directory + full_name)
+    #adata.write(filename= data_directory + full_name)
 
     return
 

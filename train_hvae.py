@@ -11,7 +11,8 @@ from scipy.stats import entropy
 from pytorch_lightning import Trainer
 import random
 from pytorch_lightning.callbacks import EarlyStopping
-    
+import argparse
+
 def set_seed(seed: int = 42):
 
     random.seed(seed)
@@ -54,22 +55,17 @@ def save_validate(dataloader, model, save_embedding):
 
 
         
-def main(train_data_name, model_checkpoint, val_data_path = None, num_epochs = 50, latent_dim = 90, hidden_dim = 128, layers = 1, learning_rate = 0.0001, batch_size = 256, patience = 15, encode_covariates =True, ln = False, gene_factor = 20, save_embedding = "embedding.npz", model_checkpoint = "model.ckpt"):
+def main(train_data_name, gene_names, dataset_symbol, label_symbols, data_symbol, gene_symbol, val_data_path = None, num_epochs = 50, latent_dim = 90, hidden_dim = 128, layers = 1, learning_rate = 0.0001, batch_size = 256, patience = 15, encode_covariates =True, ln = False, gene_factor = 20, save_embedding = "embedding.npz", model_checkpoint = "model.ckpt"):
 
 
     device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
     
-    train_dataset = SingleCellDataset(
-    data_path=train_data_name
-    )
+    train_dataset = SingleCellDataset(train_data_name, gene_names, dataset_symbol, label_symbols, data_symbol, gene_symbol)
     
     if val_data_path != None:
-        val_dataset = SingleCellDataset(
-        data_path=val_data_path
-        )
+        val_dataset = SingleCellDataset(val_data_path)
     
-
-    model = HVAE_Lightning7(n_input=train_dataset.return_size(), n_latent=latent_dim,n_hidden = hidden_dim, n_layers=layers, encode_covariates=encode_covariates, ln = ln, num_components = train_dataset.return_num_batches(), gene_factor = gene_factor, prediction_genes = train_dataset.num_marker_genes())
+    model = HVAE_Lightning7(n_input=train_dataset.return_size(), n_latent=latent_dim,n_hidden = hidden_dim, n_layers=layers, encode_covariates=encode_covariates, ln = ln, num_components = train_dataset.return_num_batches(), gene_factor = gene_factor, prediction_genes = train_dataset.num_marker_genes(), n_batch = train_dataset.return_num_batches(), random_assignment = False)
     model.to(device)
 
 
@@ -108,6 +104,40 @@ def main(train_data_name, model_checkpoint, val_data_path = None, num_epochs = 5
 
         
 if __name__ == "__main__":
+
+
+    cmdline_parser = argparse.ArgumentParser('run hvae')
+
+
+    cmdline_parser.add_argument('-d', '--dataset',
+                                help='dataset',
+                                default = '../data/test_query.npz',
+                                required = True,
+                                type=str)
+    cmdline_parser.add_argument('-s', '--dataset_symbol',
+                                help='dataset',
+                                default = 'batch',
+                                type=str)
+    cmdline_parser.add_argument('-l', '--label_symbols',
+                                help='cell_subtype',
+                                default = 'batch',
+                                type=str)
+    cmdline_parser.add_argument('-e', '--data_symbol',
+                                help='data_symbol',
+                                default = 'data',
+                                type=str)
+    cmdline_parser.add_argument('-g', '--gene_symbol',
+                                help='gene_names',
+                                default = 'gene_names',
+                                type=str)
+                                
+    args, unknowns = cmdline_parser.parse_known_args()
+
     set_seed()
-    main()
+    
+    gene_names = ["PTPRC", "CD2", "CD3D","CD3G","CD3E", "CD8A","CD8B", "CD4", "MZB1", "CD19", "MS4A1", "CD14", "FCGR3A", "FCGR1A", "ITGAM", "CD68", "SPP1", "IL3RA",  "C1QA", "TYROBP", "FCER1G", "CPA3",  "TPSAB1", "MS4A2", "KIT", "ACTA2", "THY1", "CRABP1", "VWF", "ENG", "CDH5", "VCAM1", "KRT19", "KRT8", "EPCAM", "ALB", "TF", "TTR", "MLANA", "TYRP1", "MITF", "PMEL", "FDCSP", "SPIB", "ASCL1", "CALCA", "CHGA", "CHGB", "TFF3","GRP", "CEACAM5", "CEACAM6", "SCGB2A2","ENO2","SSTR2"]
+    
+    
+    
+    main(train_data_name = args.dataset, gene_names = gene_names, dataset_symbol = args.dataset_symbol, label_symbols = args.label_symbols,  data_symbol = args.data_symbol, gene_symbol = args.gene_symbol,  val_data_path = None, num_epochs = 50, latent_dim = 90, hidden_dim = 128, layers = 1, learning_rate = 0.0001, batch_size = 255, patience = 15, encode_covariates =True, ln = False, gene_factor = 20, save_embedding = "embedding.npz", model_checkpoint = "model.ckpt")
     
