@@ -445,12 +445,13 @@ class HVAE_Lightning(pl.LightningModule):
         
         
 class HVAE_Lightning7(pl.LightningModule):
-    def __init__(self, n_input, n_latent=10, n_hidden=128, n_layers=1, encode_covariates=False, ln=False, kl_weight=0.001, lr=1e-3, n_batch = 9, num_components = 2, reconstruction_weight = 0.001, gene_factor = 0.5, prediction_genes = 18):
+    def __init__(self, n_input, n_latent=10, n_hidden=128, n_layers=1, encode_covariates=False, ln=False, kl_weight=0.001, lr=1e-3, n_batch = 9, num_components = 2, reconstruction_weight = 0.001, gene_factor = 0.5, prediction_genes = 18, random_assignment = False):
         super().__init__()
         self.save_hyperparameters()
         device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
         self.encode_covariates = encode_covariates
         input_dim = n_input + 20 if encode_covariates else n_input
+        self.random_assignment = False
         
         self.z_encoder = EncoderHVAE(input_dim, n_latent,n_layers = n_layers)
         self.l_encoder = EncoderHVAE2(n_latent, num_components, n_layers = n_layers)
@@ -482,6 +483,7 @@ class HVAE_Lightning7(pl.LightningModule):
         assert not torch.isnan(x).any(), "NaN detected in input data!"
         assert not torch.isnan(covariates).any(), "NaN detected in covariates inputdata!"
         
+        batch_labels = covariates
         covariates = self.cov_embedding(covariates)
 
         assert not torch.isnan(covariates).any(), "NaN detected in covariates data!"
@@ -497,7 +499,12 @@ class HVAE_Lightning7(pl.LightningModule):
         
         c = torch.multinomial(l_pi, num_samples=1).squeeze()
         
-        library = l_mu[torch.arange(len(c)), c] + l_var[torch.arange(len(c)), c] * torch.randn_like(l_var[:, 0])
+        
+        if self.random_assignment:
+            library = l_mu[torch.arange(len(c_int)), batch_labels] + \
+                l_var[torch.arange(len(c_int)), batch_labels] * torch.randn_like(l_var[:, 0])
+        else:
+            library = l_mu[torch.arange(len(c)), c] + l_var[torch.arange(len(c)), c] * torch.randn_like(l_var[:, 0])
         
         px_scale, px_r, px_rate, px_dropout = self.decoder(self.dispersion, z, library.unsqueeze(dim=-1), covariates)
         gene_pred = self.pred_genes(z_mu)

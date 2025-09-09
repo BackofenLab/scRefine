@@ -4,7 +4,7 @@ from torch.utils.data import Dataset
 
 
 class SingleCellDataset(Dataset):
-    def __init__(self, data_path, batch_dict, gene_names, dataset_symbol, label_symbols, data_symbol, gene_symbol, load_raw_indices=False):
+    def __init__(self, data_path, batch_dict, gene_names, dataset_symbol, label_symbols, data_symbol, gene_symbol, load_raw_indices=False, sample_fraction = 1.0):
 
         processed_data = np.load(data_path, allow_pickle=True)
         self.data = processed_data[data_symbol]
@@ -31,16 +31,11 @@ class SingleCellDataset(Dataset):
         
         self.bin_indices = np.concat(bin_indices, axis = -1)
 
-
-
-        if load_raw_indices:
-            self.raw_indices = processed_data["raw_indices"]
-
-        self.label_to_index = {
-            label: index for index, label in enumerate(sorted(set(self.batch)))
-        }
-
-        self.label_indices = [self.label_to_index[label] for label in self.batch]
+        if sample_fraction <= 1.0:
+            indices = np.random.choice(len(self.data), int(sample_fraction * len(self.data)), replace=False)
+            self.data = self.data[indices]
+            self.label = self.label[indices]
+            self.bin_indices = self.bin_indices[indices]
         
 
     def __len__(self):
