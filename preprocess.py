@@ -47,4 +47,4 @@ if __name__ == "__main__":
     obs_fields = [args.dataset_key]
     layer_fields = []
     
-    translate(args.dataset_path, args.output_query_h5ad, args.npy_dataset, obs_fields, layer_fields)
+    translate(args.dataset_path, args.output_h5ad, args.npy_dataset, obs_fields, layer_fields)
