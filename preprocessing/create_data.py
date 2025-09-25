@@ -124,9 +124,9 @@ def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name
     print(data_directory + query_name)
     print(data_directory + full_name)
     
-    #adata_ref.write(filename= data_directory + ref_name)
+    adata_ref.write(filename= data_directory + ref_name)
     adata_query.write(filename= data_directory + query_name)
-    #adata.write(filename= data_directory + full_name)
+    adata.write(filename= data_directory + full_name)
 
     return
 
