@@ -44,7 +44,7 @@ def convert_object_to_int_with_nan(adata):
 
 
 
-def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name, query_name, samples_to_remove = None, test_size = 0.1, n_top_genes=10000, batch_key="batch",layer = "counts", flavor='seurat'):
+def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name, query_name, samples_to_remove = None, test_size = 0.1, n_top_genes=10000, batch_key="batch",layer = "counts", flavor='seurat', run_hvg = True):
 
     """
     Preprocess single-cell RNA-seq data for downstream analysis.
@@ -91,38 +91,35 @@ def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name
     
     if samples_to_remove != None: 
         adata = adata[~adata.obs['SampleID'].isin(samples_to_remove)]
-
-
-    subset_indices = [i for i, gene in enumerate(adata.var_names) if gene in set(gene_symbol)]
-    adata_selected = adata[:, subset_indices]
-
-
+        
     X_train, X_test = train_test_split(range(0,adata.shape[0]), test_size = test_size)
+    
+    if run_hvg == True:
+        subset_indices = [i for i, gene in enumerate(adata.var_names) if gene in set(gene_symbol)]
+        adata_selected = adata[:, subset_indices]
 
-    try:
-        sc.pp.highly_variable_genes(adata, flavor = flavor, layer = layer, n_top_genes=n_top_genes, batch_key=batch_key, subset=False)
-    except:
-        sc.pp.highly_variable_genes(adata, flavor = flavor, n_top_genes=n_top_genes, batch_key=batch_key, subset=False)
 
-    adata_hvg = adata[:, adata.var['highly_variable']].copy()
-    adata_hvg = adata_hvg.copy()
-    adata_selected = adata_selected.copy()
+        try:
+            sc.pp.highly_variable_genes(adata, flavor = flavor, layer = layer, n_top_genes=n_top_genes, batch_key=batch_key, subset=False)
+        except:
+            sc.pp.highly_variable_genes(adata, flavor = flavor, n_top_genes=n_top_genes, batch_key=batch_key, subset=False)
 
-    adata_selected.obs = adata_hvg.obs.copy()
-    adata = ad.concat([adata_hvg, adata_selected], axis=1)
-    adata.obs = adata_hvg.obs.copy()
+        adata_hvg = adata[:, adata.var['highly_variable']].copy()
+        adata_hvg = adata_hvg.copy()
+        adata_selected = adata_selected.copy()
 
-    duplicates = adata.var_names.duplicated()
-    adata = adata[:, ~duplicates].copy()
+        adata_selected.obs = adata_hvg.obs.copy()
+        adata = ad.concat([adata_hvg, adata_selected], axis=1)
+        adata.obs = adata_hvg.obs.copy()
 
-    assert len(adata.var_names) == len(list(set(adata.var_names)))
+        duplicates = adata.var_names.duplicated()
+        adata = adata[:, ~duplicates].copy()
+
+        assert len(adata.var_names) == len(list(set(adata.var_names)))
+        
 
     adata_ref = adata[X_train].copy()
     adata_query = adata[X_test].copy()
-
-    print(data_directory + ref_name)
-    print(data_directory + query_name)
-    print(data_directory + full_name)
     
     adata_ref.write(filename= data_directory + ref_name)
     adata_query.write(filename= data_directory + query_name)
