@@ -44,7 +44,7 @@ def convert_object_to_int_with_nan(adata):
 
 
 
-def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name, query_name, samples_to_remove = None, test_size = 0.1, n_top_genes=10000, batch_key="batch",layer = "counts", flavor='seurat', run_hvg = True):
+def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name, query_name, samples_to_remove = None, test_size = 0.1, n_top_genes=10000, batch_key="batch",layer = "counts", flavor='seurat', no_hvg = False):
 
     """
     Preprocess single-cell RNA-seq data for downstream analysis.
@@ -87,14 +87,15 @@ def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name
 
     gene_symbol = open(marker_gene_list).readlines()
     adata = sc.read(os.path.join(data_directory, dataset))
+    print("ADATA")
     print(adata)
     
     if samples_to_remove != None: 
         adata = adata[~adata.obs['SampleID'].isin(samples_to_remove)]
         
     X_train, X_test = train_test_split(range(0,adata.shape[0]), test_size = test_size)
-    
-    if run_hvg == True:
+
+    if no_hvg == False:
         subset_indices = [i for i, gene in enumerate(adata.var_names) if gene in set(gene_symbol)]
         adata_selected = adata[:, subset_indices]
 

@@ -39,15 +39,11 @@ if __name__ == "__main__":
                                 default="batch",
                                 help='dataset_key',
                                 type=str)
-    cmdline_parser.add_argument('-r', '--run_hvg',
-                                default=True,
-                                help='set if hvg should be run',
-                                type=bool)
-                                
+    cmdline_parser.add_argument('--no_hvg', action=argparse.BooleanOptionalAction, default = False)
                                 
     args, unknowns = cmdline_parser.parse_known_args()
-    
-    preprocessing(marker_gene_list = args.marker_genes, data_directory = args.dataset_path, dataset = args.dataset, full_name = args.output_h5ad, ref_name = args.output_ref_h5ad, query_name = args.output_query_h5ad, batch_key=args.dataset_key, run_hvg = args.run_hvg)
+    print(args.no_hvg)
+    preprocessing(marker_gene_list = args.marker_genes, data_directory = args.dataset_path, dataset = args.dataset, full_name = args.output_h5ad, ref_name = args.output_ref_h5ad, query_name = args.output_query_h5ad, batch_key=args.dataset_key, no_hvg = args.no_hvg)
     
     obs_fields = [args.dataset_key]
     layer_fields = []
