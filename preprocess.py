@@ -1,6 +1,7 @@
 from preprocessing.translate_data import  translate
 from preprocessing.create_data import  preprocessing
 import argparse
+import os
 
 if __name__ == "__main__":
     
@@ -43,6 +44,11 @@ if __name__ == "__main__":
                                 
     args, unknowns = cmdline_parser.parse_known_args()
     print(args.no_hvg)
+    
+    if not args.dataset_path.endswith(os.sep):
+        args.dataset_path = args.dataset_path + os.sep
+    
+    
     preprocessing(marker_gene_list = args.marker_genes, data_directory = args.dataset_path, dataset = args.dataset, full_name = args.output_h5ad, ref_name = args.output_ref_h5ad, query_name = args.output_query_h5ad, batch_key=args.dataset_key, no_hvg = args.no_hvg)
     
     obs_fields = [args.dataset_key]
