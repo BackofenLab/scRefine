@@ -130,6 +130,47 @@ if __name__ == "__main__":
                                 help='gene_names',
                                 default = 'gene_names',
                                 type=str)
+    cmdline_parser.add_argument('-o', '--output',
+                                help='output embedding',
+                                default = 'embedding.npz',
+                                type=str)
+    cmdline_parser.add_argument('-m', '--model',
+                                help='output model',
+                                default = 'model.ckpt',
+                                type=str)
+    cmdline_parser.add_argument('-e', '--epochs',
+                                help='number of epochs',
+                                default = 50,
+                                type=int)
+    cmdline_parser.add_argument('-z', '--latent_dimension',
+                                help='latent_dimension',
+                                default = 90,
+                                type=int)
+    cmdline_parser.add_argument('-k', '--hidden_dimension',
+                                help='hidden_dimension',
+                                default = 128,
+                                type=int)
+    cmdline_parser.add_argument('-c', '--layers',
+                                help='mumber of layers',
+                                default = 1,
+                                type=int)
+    cmdline_parser.add_argument('-r', '--learning_rate',
+                                help='learning rate',
+                                default = 0.0001,
+                                type=float)
+    cmdline_parser.add_argument('-b', '--batch_size',
+                                help='batch size',
+                                default = 255,
+                                type=int)
+    cmdline_parser.add_argument('-p', '--patience',
+                                help='patience',
+                                default = 15,
+                                type=int)
+    cmdline_parser.add_argument('-y', '--gene_factor',
+                                help='weight for marker genes',
+                                default = 20,
+                                type=int)
+                                
                                 
     args, unknowns = cmdline_parser.parse_known_args()
 
@@ -139,5 +180,5 @@ if __name__ == "__main__":
     
     
     
-    main(train_data_name = args.dataset, gene_names = gene_names, dataset_symbol = args.dataset_symbol, label_symbols = args.label_symbols,  data_symbol = args.data_symbol, gene_symbol = args.gene_symbol,  val_data_path = None, num_epochs = 50, latent_dim = 90, hidden_dim = 128, layers = 1, learning_rate = 0.0001, batch_size = 255, patience = 15, encode_covariates =True, ln = False, gene_factor = 20, save_embedding = "embedding.npz", model_checkpoint = "model.ckpt")
+    main(train_data_name = args.dataset, gene_names = gene_names, dataset_symbol = args.dataset_symbol, label_symbols = args.label_symbols,  data_symbol = args.data_symbol, gene_symbol = args.gene_symbol,  val_data_path = None, num_epochs = args.epochs, latent_dim = args.latent_dimension, hidden_dim = args.hidden_dimension, layers = args.layers, learning_rate = args.learning_rate, batch_size = args.batch_size, patience = args.patience, encode_covariates =True, ln = False, gene_factor = args.gene_factor, save_embedding = args.output, model_checkpoint = args.model)
     
