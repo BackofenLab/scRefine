@@ -87,8 +87,7 @@ def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name
 
     gene_symbol = open(marker_gene_list).readlines()
     adata = sc.read(os.path.join(data_directory, dataset))
-    print("ADATA")
-    print(adata)
+
     
     if samples_to_remove != None: 
         adata = adata[~adata.obs['SampleID'].isin(samples_to_remove)]

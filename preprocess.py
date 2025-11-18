@@ -17,7 +17,7 @@ if __name__ == "__main__":
                                 required = True,
                                 type=str)
     cmdline_parser.add_argument('-m', '--marker_genes',
-                                default="./preprocessing/marker_genes.txt",
+                                default="../marker_genes.txt",
                                 help='marker genes',
                                 type=str)
     cmdline_parser.add_argument('-o', '--output_h5ad',
