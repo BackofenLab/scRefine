@@ -11,11 +11,13 @@ def create_bins(data, n_bins = 10):
     return bin_indices/10
     
 class SingleCellDataset(Dataset):
-    def __init__(self, data_path, gene_names, dataset_symbol, label_symbols, data_symbol, gene_symbol, load_raw_indices=False, sample_fraction = 1.0, return_label_ints = False):
+    def __init__(self, data_path, gene_names, dataset_symbol, label_symbols, data_symbol, gene_symbol, 
+    load_raw_indices=False, sample_fraction = 1.0, return_label_ints = False, count_symbol = None):
 
         processed_data = np.load(data_path, allow_pickle=True)
-        print(processed_data)
         self.data = processed_data[data_symbol]
+        if count_symbol == None: self.count_data = np.log1p(self.data)
+        else: self.count_data = processed_data[count_symbol]
         self.label = processed_data[label_symbols]
         unique_labels = np.unique(self.label)
         self.label_int = [list(unique_labels).index(l) for l in self.label]
@@ -37,7 +39,7 @@ class SingleCellDataset(Dataset):
         for gene_sym in gene_names:
             try:
                 relevant_int = list(gene_data).index(gene_sym)
-                relevant_data = self.data[:,relevant_int]
+                relevant_data = self.count_data[:,relevant_int]
                 bin_data = np.expand_dims(create_bins(relevant_data, n_bins = 10),axis=-1)
                 bin_indices.append(bin_data)
                 self.prediction_genes = self.prediction_genes + 1
