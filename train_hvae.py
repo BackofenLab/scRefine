@@ -170,14 +170,15 @@ if __name__ == "__main__":
                                 help='weight for marker genes',
                                 default = 20,
                                 type=int)
-                                
+    cmdline_parser.add_argument('-z', '--marker_genes',
+                                help='path to marker gene list',
+                                default = "marker_genes.txt",
+                                type=str)
                                 
     args, unknowns = cmdline_parser.parse_known_args()
 
-    set_seed()
-    
-    gene_names = ["PTPRC", "CD2", "CD3D","CD3G","CD3E", "CD8A","CD8B", "CD4", "MZB1", "CD19", "MS4A1", "CD14", "FCGR3A", "FCGR1A", "ITGAM", "CD68", "SPP1", "IL3RA",  "C1QA", "TYROBP", "FCER1G", "CPA3",  "TPSAB1", "MS4A2", "KIT", "ACTA2", "THY1", "CRABP1", "VWF", "ENG", "CDH5", "VCAM1", "KRT19", "KRT8", "EPCAM", "ALB", "TF", "TTR", "MLANA", "TYRP1", "MITF", "PMEL", "FDCSP", "SPIB", "ASCL1", "CALCA", "CHGA", "CHGB", "TFF3","GRP", "CEACAM5", "CEACAM6", "SCGB2A2","ENO2","SSTR2"]
-    
+    set_seed()    
+    gene_names = open(args.marker_genes).readlines()
     
     
     main(train_data_name = args.dataset, gene_names = gene_names, dataset_symbol = args.dataset_symbol, label_symbols = args.label_symbols,  data_symbol = args.data_symbol, gene_symbol = args.gene_symbol,  val_data_path = None, num_epochs = args.epochs, latent_dim = args.latent_dimension, hidden_dim = args.hidden_dimension, layers = args.layers, learning_rate = args.learning_rate, batch_size = args.batch_size, patience = args.patience, encode_covariates =True, ln = False, gene_factor = args.gene_factor, save_embedding = args.output, model_checkpoint = args.model)
