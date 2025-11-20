@@ -35,6 +35,7 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import StepLR
 from torch.distributions import Normal, kl_divergence
 from sklearn.preprocessing import LabelEncoder
+from torch.optim import Adam
 
 _identity = lambda x: x
         
@@ -577,7 +578,7 @@ class HVAE_Lightning(pl.LightningModule):
         mmd_weight=0.1,
         n_batch=9, num_components=9,
         reconstruction_weight=1.0,
-        gene_factor=0.05,
+        gene_factor=50,
         prediction_genes=18,
         random_assignment=False,
         dispersion="gene-cell",           # "gene" or "gene-cell"
@@ -768,7 +769,7 @@ class HVAE_Lightning(pl.LightningModule):
         ce_loss = torch.nn.MSELoss()
         ce_loss_val = ce_loss(torch.clip(gene_pred.float(), max=2), gene.float())
         kl_w = self._current_kl_weight()
-        loss = recon + kl_w * (kl_z_total + kl_l) + self.gene_factor * ce_loss_val
+        loss = (recon + kl_w * (kl_z_total + kl_l)) * 0.1 + self.gene_factor * ce_loss_val
         
         """
         with torch.no_grad():

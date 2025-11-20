@@ -67,7 +67,14 @@ class SingleCellDataset(Dataset):
         
     def return_num_batches(self):
         return len(self.batch_dict)
-
+    
+    def return_data(self):
+        return self.data
+    
+    def return_batches(self):
+        return self.batch
+        
+        
     def __getitem__(self, index):
         return (
             self.data[index],

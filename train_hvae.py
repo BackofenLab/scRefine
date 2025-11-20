@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from models.vae import HVAE_Lightning7
+from models.vae import HVAE_Lightning
 from dataset.singlecell import SingleCellDataset
 import logging
 import time
@@ -49,24 +49,45 @@ def save_validate(dataloader, model, save_embedding):
             mu = output["z_mu"]
             mu_list.extend(mu.detach().cpu().numpy())
         
-    np.savez(save_embedding, embedding = mu_list, batches = np.array(batched_data_list), labels = np.array(label_data_list), or_data = np.array(data_list))
+    np.savez(save_embedding, embedding = mu_list, batches = np.array(batched_data_list), labels = np.array(label_data_list))
 
     return 
 
 
         
-def main(train_data_name, gene_names, dataset_symbol, label_symbols, data_symbol, gene_symbol, val_data_path = None, num_epochs = 50, latent_dim = 90, hidden_dim = 128, layers = 1, learning_rate = 0.0001, batch_size = 256, patience = 15, encode_covariates =True, ln = False, gene_factor = 20, save_embedding = "embedding.npz", model_checkpoint = "model.ckpt"):
+
+        
+def main(train_data_name, gene_names, dataset_symbol, label_symbols, 
+         data_symbol, gene_symbol, val_data_path = None, 
+         num_epochs = 50, latent_dim = 90, hidden_dim = 128, 
+         layers = 1, learning_rate = 0.0001, batch_size = 256,
+           patience = 15, encode_covariates =True, ln = False, 
+           gene_factor = 20, kl_weight = 0.01, 
+            mmd_weight = 0.5, reconstruction_weight = 1.0, 
+            kl_anneal_warmup_epochs = 20, kl_anneal_max = 0.5, 
+             save_embedding = "embedding.npz",
+             model_checkpoint = "model.ckpt", count_symbol = None, random_assignment = False):
 
 
     device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
     
-    train_dataset = SingleCellDataset(train_data_name, gene_names, dataset_symbol, label_symbols, data_symbol, gene_symbol)
+    train_dataset = SingleCellDataset(train_data_name, gene_names, dataset_symbol, label_symbols, data_symbol, gene_symbol, count_symbol = count_symbol)
     
     if val_data_path != None:
         val_dataset = SingleCellDataset(val_data_path)
-    
-    model = HVAE_Lightning7(n_input=train_dataset.return_size(), n_latent=latent_dim,n_hidden = hidden_dim, n_layers=layers, encode_covariates=encode_covariates, ln = ln, num_components = train_dataset.return_num_batches(), gene_factor = gene_factor, prediction_genes = train_dataset.num_marker_genes(), n_batch = train_dataset.return_num_batches(), random_assignment = False)
+    print(train_dataset.return_size())
+    print(train_dataset.return_num_batches())
+
+
+    model = HVAE_Lightning(n_input=train_dataset.return_size(), n_latent=latent_dim,n_hidden = hidden_dim, n_layers=layers, 
+                            encode_covariates=encode_covariates, ln = ln, num_components = train_dataset.return_num_batches(), 
+                            gene_factor = gene_factor, prediction_genes = train_dataset.num_marker_genes(), 
+                            n_batch = train_dataset.return_num_batches(), random_assignment = random_assignment, kl_weight = kl_weight, 
+                            mmd_weight = mmd_weight, reconstruction_weight = reconstruction_weight,
+                            kl_anneal_warmup_epochs = kl_anneal_warmup_epochs, kl_anneal_max = kl_anneal_max)
     model.to(device)
+    model.get_dataset_baseline(train_dataset.return_data(), train_dataset.return_batches(), n_batch = train_dataset.return_num_batches())
+
 
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -93,13 +114,15 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols, data_symbol
 
     trainer = Trainer(
     max_epochs=num_epochs, 
-    callbacks=[early_stop_callback]
+    callbacks=[early_stop_callback],
+    precision = 64,
     )
     trainer.fit(model, dataloader, val_dataloader)
     trainer.save_checkpoint(model_checkpoint)
     
     model.to("cpu")
     save_validate(val_dataloader, model, save_embedding)
+    
     
 
         
@@ -181,5 +204,11 @@ if __name__ == "__main__":
     gene_names = open(args.marker_genes).readlines()
     
     
-    main(train_data_name = args.dataset, gene_names = gene_names, dataset_symbol = args.dataset_symbol, label_symbols = args.label_symbols,  data_symbol = args.data_symbol, gene_symbol = args.gene_symbol,  val_data_path = None, num_epochs = args.epochs, latent_dim = args.latent_dimension, hidden_dim = args.hidden_dimension, layers = args.layers, learning_rate = args.learning_rate, batch_size = args.batch_size, patience = args.patience, encode_covariates =True, ln = False, gene_factor = args.gene_factor, save_embedding = args.output, model_checkpoint = args.model)
+    
+    main(train_data_name = args.dataset, gene_names = gene_names, dataset_symbol = args.dataset_symbol,
+          label_symbols = args.label_symbols,  data_symbol = args.data_symbol, gene_symbol = args.gene_symbol, 
+            val_data_path = None, num_epochs = 50, latent_dim = 90, hidden_dim = 128, layers = 1, learning_rate = 0.0001, 
+            batch_size = 255, patience = 15, encode_covariates =True, ln = False, gene_factor = args.gene_factor, kl_weight = args.kl_weight, 
+            mmd_weight = args.mmd_weight, reconstruction_weight = args.reconstruction_weight, save_embedding = args.embedding_name,
+              kl_anneal_warmup_epochs = args.kl_anneal_warmup_epochs, kl_anneal_max = args.kl_anneal_max, model_checkpoint = "model.ckpt", count_symbol = None, random_assignment =  False)
     

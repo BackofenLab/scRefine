@@ -6,11 +6,17 @@ Given the highly dynamic nature of immune cells, which transition between states
 
 **running scRefine**
 
-**data preparation**
-see preprocess.py
-
-**training hvae**
-see train_hvae.py
-
+#### Example
+```
+python main.py \
+--dataset_path {dataset} \
+--dataset_symbol {field for batch correction} \
+--no_hvg \
+--label_symbols {labels for plotting} \
+--output {output embedding} \
+--filtered_data_output {filtered output} \
+--conf_data {output with conf data} \
+--plots {base name for potting} 
+```
 **contrastive learning**
 see train_simclr.py

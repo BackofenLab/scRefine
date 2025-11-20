@@ -44,7 +44,7 @@ def convert_object_to_int_with_nan(adata):
 
 
 
-def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name, query_name, samples_to_remove = None, test_size = 0.1, n_top_genes=10000, batch_key="batch",layer = "counts", flavor='seurat', no_hvg = False):
+def preprocessing(marker_gene_list, dataset, full_name, samples_to_remove = None, test_size = 0.1, n_top_genes=10000, batch_key="batch",layer = "counts", flavor='seurat', no_hvg = False):
 
     """
     Preprocess single-cell RNA-seq data for downstream analysis.
@@ -54,8 +54,6 @@ def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name
     ----------
     marker_gene_list : str
         Path to a file containing a list of marker gene names (one per line).
-    data_directory : str
-        Directory where the input dataset is stored and where outputs will be saved.
     dataset : str
         Filename of the input dataset (must be readable by Scanpy, e.g., .h5ad).
     full_name : str
@@ -77,7 +75,7 @@ def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name
 
     Outputs
     -------
-    Writes three AnnData objects to `data_directory`:
+    Writes three AnnData objects:
         - ref_name   : reference (train) dataset
         - query_name : query (test) dataset
         - full_name  : full processed dataset (HVGs + marker genes)
@@ -85,8 +83,8 @@ def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name
     """
     
 
-    gene_symbol = open(marker_gene_list).readlines()
-    adata = sc.read(os.path.join(data_directory, dataset))
+    gene_symbol = [f[:-1] for f in open(marker_gene_list).readlines()]
+    adata = sc.read(os.path.join(dataset))
 
     
     if samples_to_remove != None: 
@@ -121,16 +119,10 @@ def preprocessing(marker_gene_list, data_directory, dataset, full_name, ref_name
     adata_ref = adata[X_train].copy()
     adata_query = adata[X_test].copy()
     
-    adata_ref.write(filename= data_directory + ref_name)
-    adata_query.write(filename= data_directory + query_name)
-    adata.write(filename= data_directory + full_name)
+    adata_ref.write(filename= full_name+ "_ref.h5ad")
+    adata_query.write(filename= full_name+ "_query.h5ad")
+    adata.write(filename=  full_name + ".h5ad")
 
     return
-
-
-if __name__ == '__main__':
-
-    random.seed(42)
-    preprocessing(marker_gene_list = "marker_genes.txt", data_directory = "../data/", dataset = "test.h5ad", full_name = "test_output.h5ad", ref_name = "test_ref.h5ad", query_name = "test_query.h5ad")
 
 
