@@ -21,6 +21,7 @@ import argparse
 from scanpy.tl import leiden
 from scanpy.pp import neighbors
 import anndata as ad
+import plotly.express as px
 
 def plot_tsne(projections, batches, name):
     
