@@ -114,4 +114,4 @@ if __name__ == "__main__":
     ############################################################################################################
     print("######################################### data cleanup ##############################################")
     
-    #if args.no_cleanup == False: clean_up(args.output, args.filtered_data_output, args.conf_data, plots=args.plots, labels = args.labels, cluster_min = args.cluster_min, quantil = args.quantil, quantil_max = args.quantil_max)
+    if args.no_cleanup == False: clean_up(args.output, args.filtered_data_output, args.conf_data, plots=args.plots, labels = args.labels, cluster_min = args.cluster_min, quantil = args.quantil, quantil_max = args.quantil_max)
