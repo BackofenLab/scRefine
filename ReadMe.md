@@ -19,4 +19,19 @@ python main.py \
 --plots {base name for potting} 
 ```
 **contrastive learning**
-see train_simclr.py
+
+#### Example
+
+before running the contrastive learning script, please use preprocess.py to create the data.
+
+```
+python preprocess.py --dataset {dataset name} --dataset_key {batch name} --obs_fields {obs fields to be copied} --layer_fields {layer fields to be copied} --npy_dataset {npz output}
+```
+
+then use train_simclr.py
+
+
+```
+python train_simclr.py --train_data_name {data file} --embedding_save {embedding-output} --dataset_symbol {name of dataset field} --label_symbols {name of label field} --data_symbol {name of data field}
+```
+
