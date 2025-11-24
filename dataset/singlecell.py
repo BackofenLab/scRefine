@@ -19,9 +19,10 @@ class SingleCellDataset(Dataset):
         if count_symbol == None: self.count_data = np.log1p(self.data)
         else: self.count_data = processed_data[count_symbol]
         self.label = processed_data[label_symbols]
+        self.label = [str(l) for l in self.label]
         unique_labels = np.unique(self.label)
         self.label_int = [list(unique_labels).index(l) for l in self.label]
-        self.label = [str(l) for l in self.label]
+
         self.batch = processed_data[dataset_symbol]
         
         self.batch_dict = list(np.unique(self.batch))
