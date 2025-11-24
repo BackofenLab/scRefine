@@ -43,6 +43,78 @@ def convert_object_to_int_with_nan(adata):
     
 
 
+def ensembl_to_hugo_in_adata(
+    adata,
+    source="var_names",     # "var_names" or a column name in adata.var
+    target_col="gene_symbol",
+    species="human",
+    strip_version=True,
+    overwrite_var_names=False
+):
+    import mygene
+    
+    mg = mygene.MyGeneInfo()
+
+
+    if source == "var_names":
+        ensembl_ids = pd.Index(adata.var_names)
+    else:
+        if source not in adata.var.columns:
+            raise ValueError(f"source='{source}' not found in adata.var.columns.")
+        ensembl_ids = adata.var[source].astype(str)
+
+    if strip_version:
+        base_ids = ensembl_ids.to_series().str.replace(r"\.\d+$", "", regex=True)
+    else:
+        base_ids = ensembl_ids.to_series()
+
+
+    query_res = mg.querymany(
+        base_ids.tolist(),
+        scopes="ensembl.gene",
+        fields="symbol",
+        species=species,
+        as_dataframe=True
+    )
+
+
+    symbol_map = {}
+    for idx, row in query_res.iterrows():
+        if isinstance(row, pd.Series):
+            symbol = row.get("symbol", None)
+        else:
+            symbol = None
+        if isinstance(symbol, str):
+            symbol_map[idx] = symbol
+
+
+    mapped_symbols = base_ids.map(symbol_map).astype("object")
+    adata.var[target_col] = mapped_symbols.values
+
+
+    if overwrite_var_names:
+
+        new_var_names = adata.var[target_col].where(
+            ~adata.var[target_col].isna(),
+            other=ensembl_ids
+        )
+
+        new_var_names = pd.Index(new_var_names)
+        if not new_var_names.is_unique:
+            counts = {}
+            unique_names = []
+            for name in new_var_names:
+                if name not in counts:
+                    counts[name] = 0
+                    unique_names.append(name)
+                else:
+                    counts[name] += 1
+                    unique_names.append(f"{name}.dup{counts[name]}")
+            new_var_names = pd.Index(unique_names)
+
+        adata.var_names = new_var_names
+
+    return adata
 
 def preprocessing(marker_gene_list, dataset, full_name, samples_to_remove = None, test_size = 0.1, n_top_genes=10000, batch_key="batch",layer = "counts", flavor='seurat', no_hvg = False):
 
