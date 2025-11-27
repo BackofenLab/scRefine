@@ -99,7 +99,7 @@ def clean_up(data, filtered_data_output, conf_data, plots, labels = None, cluste
         data_x_selected = np.array(embeddings)[np.array(labels) == cluster_id]
         data_x_selected_emb = np.array(data_x_tsne)[np.array(labels) == cluster_id]
         selected_conf_knn = np.array(conf_knn)[np.array(labels) == cluster_id]
-        labels_selected = labels[np.array(labels) == cluster_id]
+        labels_selected = np.array(labels)[np.array(labels) == cluster_id]
             
         q1 = max(min(np.quantile(selected_conf_knn, quantil), quantil_max), cluster_min)
             
