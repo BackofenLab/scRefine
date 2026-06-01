@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from torch.utils.data import Dataset
+from .dataloader import DataLoaderManager
 
 def create_bins(data, n_bins = 10):
 
@@ -13,9 +14,38 @@ def create_bins(data, n_bins = 10):
 class SingleCellDataset(Dataset):
     def __init__(self, data_path, gene_names, dataset_symbol, label_symbols, data_symbol, gene_symbol, 
     load_raw_indices=False, sample_fraction = 1.0, return_label_ints = False, count_symbol = None):
+        
+        self.data_manager = DataLoaderManager(
+            domain_key="batch", 
+            class_key=None, 
+            covariate_keys=None, 
+            feature_list=None,
+            normalize_total=False,
+            log1p=False,    
+            batch_size=32, 
+            train_frac=1.0,
+            use_sampler=True,
+            sampler_emb=None,
+            sampler_knn=None,
+            sampler_domain_minibatch_strategy='proportional',
+            domain_coverage=None,
+            dist_metric='euclidean', 
+            p_intra_knn=0.0, 
+            p_intra_domain=1.0, 
+            use_faiss=True, 
+            use_ivf=True, 
+            ivf_nprobe=10, 
+            preload_dense=False,
+            device=torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        )
+        
 
-        processed_data = np.load(data_path, allow_pickle=True)
-        self.data = processed_data[data_symbol]
+#        processed_data = np.load(data_path, allow_pickle=True)
+        #self.data = processed_data[data_symbol]
+        
+        #adata =
+        #self.data = 
+        
         if count_symbol == None: self.count_data = np.log1p(self.data)
         else: self.count_data = processed_data[count_symbol]
         self.label = processed_data[label_symbols]
@@ -46,7 +76,26 @@ class SingleCellDataset(Dataset):
                 self.prediction_genes = self.prediction_genes + 1
             except:
                 print("skipped: " + str(gene_sym))
-                
+        
+        counts = np.zeros((self.prediction_genes, 10), dtype=np.int64)
+        for bin_num, bin_data in enumerate(bin_indices):
+            for data in bin_data:
+                counts[bin_num, int(data*10)] += 1
+
+        # effective-number weights
+        beta = 0.99
+        
+        weights = (1 - beta) / (1 - np.power(beta, np.maximum(counts, 1)))
+
+        # normalize per position
+        weights = weights / (weights.mean(axis=1, keepdims=True) + 1e-8)
+        
+        self.weights = weights
+        
+        print("weights")
+        print(self.weights)
+    
+    
         
         self.bin_indices = np.concat(bin_indices, axis = -1)
 
