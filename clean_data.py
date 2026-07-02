@@ -11,7 +11,6 @@ import glob
 import random
 import pandas as pd
 from sklearn.mixture import GaussianMixture
-import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
@@ -160,5 +159,7 @@ if __name__ == "__main__":
                                 type=float)
                                 
     args, unknowns = cmdline_parser.parse_known_args()
-    clean_up(args.data, args.filtered_data_output, args.conf_data, plots=args.plots, labels = args.labels, cluster_min = args.cluster_min, quantil = args.quantil, quantil_max = args.quantil_max)
+    clean_up(args.data, args.filtered_data_output, args.conf_data,
+             plots=args.plots, labels = args.labels, cluster_min = args.cluster_min,
+             quantil = args.quantil, quantil_max = args.quantil_max)
     

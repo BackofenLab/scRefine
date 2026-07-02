@@ -1,7 +1,6 @@
 import numpy as np
 import torch
-from models.vae import HVAE_Lightning2
-from dataset.singlecell import SingleCellDataset
+from models.vae import HVAE_Lightning
 import logging
 import time
 import os
@@ -14,22 +13,9 @@ from pytorch_lightning.callbacks import EarlyStopping
 import argparse
 from dataset.dataloader import DataLoaderManager
 import scanpy as sc
-def set_seed(seed: int = 42):
 
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    
 
 def save_validate(dataloader, model, save_embedding):
-    cuda_id = 0
     device = "cpu"
     
     mu_list = []
@@ -71,19 +57,7 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
 
 
     device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
-    
-    
     train_adata = sc.read(os.path.join(train_data_name))
-    
-    
-    
-    #train_dataset = SingleCellDataset(train_data_name, gene_names, dataset_symbol, label_symbols, data_symbol, gene_symbol, count_symbol = count_symbol)
-    
-    #if val_data_path != None:
-    #    val_dataset = SingleCellDataset(val_data_path)
-    #print(train_dataset.return_size())
-    #print(train_dataset.return_num_batches())
-
 
     data_manager = DataLoaderManager(
             domain_key="dataset", 
@@ -112,7 +86,7 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
     train_dataloader, val_dataloader, data_structure, info = data_manager.anndata_to_dataloader(train_adata)
     batches_out,data_out,size_, num_batches, number_marker_genes = info
 
-    model = HVAE_Lightning2(n_input=size_, n_latent=latent_dim,n_hidden = hidden_dim, n_layers=layers, 
+    model = HVAE_Lightning(n_input=size_, n_latent=latent_dim,n_hidden = hidden_dim, n_layers=layers,
                             encode_covariates=encode_covariates, ln = ln, num_components = num_batches, 
                             gene_factor = gene_factor, prediction_genes = number_marker_genes, 
                             n_batch = num_batches, random_assignment = random_assignment, kl_weight = kl_weight, 
@@ -120,14 +94,7 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
                             kl_anneal_warmup_epochs = kl_anneal_warmup_epochs, kl_anneal_max = kl_anneal_max, weights = None)
     model.to(device)
     model.get_dataset_baseline(data_out, batches_out, n_batch = num_batches)
-
-
-
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    
-    
-    dataloader = train_dataloader
-    #val_dataloader = train_dataloader
 
     early_stop_callback = EarlyStopping(
     monitor="train_loss",  
@@ -141,98 +108,8 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
     callbacks=[early_stop_callback],
     precision = 64,
     )
-    trainer.fit(model, dataloader, val_dataloader)
+    trainer.fit(model, train_dataloader, val_dataloader)
     trainer.save_checkpoint(model_checkpoint)
     
     model.to("cpu")
     save_validate(val_dataloader, model, save_embedding)
-    
-    
-
-        
-if __name__ == "__main__":
-
-
-    cmdline_parser = argparse.ArgumentParser('run hvae')
-
-
-    cmdline_parser.add_argument('-d', '--dataset',
-                                help='dataset',
-                                default = '../data/test_query.npz',
-                                required = True,
-                                type=str)
-    cmdline_parser.add_argument('-s', '--dataset_symbol',
-                                help='dataset',
-                                default = 'batch',
-                                type=str)
-    cmdline_parser.add_argument('-l', '--label_symbols',
-                                help='cell_subtype',
-                                default = 'batch',
-                                type=str)
-    cmdline_parser.add_argument('-e', '--data_symbol',
-                                help='data_symbol',
-                                default = 'data',
-                                type=str)
-    cmdline_parser.add_argument('-g', '--gene_symbol',
-                                help='gene_names',
-                                default = 'gene_names',
-                                type=str)
-    cmdline_parser.add_argument('-o', '--output',
-                                help='output embedding',
-                                default = 'embedding.npz',
-                                type=str)
-    cmdline_parser.add_argument('-m', '--model',
-                                help='output model',
-                                default = 'model.ckpt',
-                                type=str)
-    cmdline_parser.add_argument('-e', '--epochs',
-                                help='number of epochs',
-                                default = 50,
-                                type=int)
-    cmdline_parser.add_argument('-z', '--latent_dimension',
-                                help='latent_dimension',
-                                default = 90,
-                                type=int)
-    cmdline_parser.add_argument('-k', '--hidden_dimension',
-                                help='hidden_dimension',
-                                default = 128,
-                                type=int)
-    cmdline_parser.add_argument('-c', '--layers',
-                                help='mumber of layers',
-                                default = 1,
-                                type=int)
-    cmdline_parser.add_argument('-r', '--learning_rate',
-                                help='learning rate',
-                                default = 0.0001,
-                                type=float)
-    cmdline_parser.add_argument('-b', '--batch_size',
-                                help='batch size',
-                                default = 255,
-                                type=int)
-    cmdline_parser.add_argument('-p', '--patience',
-                                help='patience',
-                                default = 15,
-                                type=int)
-    cmdline_parser.add_argument('-y', '--gene_factor',
-                                help='weight for marker genes',
-                                default = 20,
-                                type=int)
-    cmdline_parser.add_argument('-z', '--marker_genes',
-                                help='path to marker gene list',
-                                default = "marker_genes.txt",
-                                type=str)
-                                
-    args, unknowns = cmdline_parser.parse_known_args()
-
-    set_seed()    
-    gene_names = open(args.marker_genes).readlines()
-    
-    
-    
-    main(train_data_name = args.dataset, gene_names = gene_names, dataset_symbol = args.dataset_symbol,
-          label_symbols = args.label_symbols,  data_symbol = args.data_symbol, gene_symbol = args.gene_symbol, 
-            val_data_path = None, num_epochs = 50, latent_dim = 300, hidden_dim = 128, layers = 1, learning_rate = 0.0001, 
-            batch_size = 255, patience = 15, encode_covariates =True, ln = False, gene_factor = args.gene_factor, kl_weight = args.kl_weight, 
-            mmd_weight = args.mmd_weight, reconstruction_weight = args.reconstruction_weight, save_embedding = args.embedding_name,
-              kl_anneal_warmup_epochs = args.kl_anneal_warmup_epochs, kl_anneal_max = args.kl_anneal_max, model_checkpoint = "model.ckpt", count_symbol = None, random_assignment =  False)
-    

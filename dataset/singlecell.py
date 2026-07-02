@@ -40,12 +40,6 @@ class SingleCellDataset(Dataset):
         )
         
 
-#        processed_data = np.load(data_path, allow_pickle=True)
-        #self.data = processed_data[data_symbol]
-        
-        #adata =
-        #self.data = 
-        
         if count_symbol == None: self.count_data = np.log1p(self.data)
         else: self.count_data = processed_data[count_symbol]
         self.label = processed_data[label_symbols]
@@ -82,21 +76,12 @@ class SingleCellDataset(Dataset):
             for data in bin_data:
                 counts[bin_num, int(data*10)] += 1
 
-        # effective-number weights
         beta = 0.99
         
         weights = (1 - beta) / (1 - np.power(beta, np.maximum(counts, 1)))
-
-        # normalize per position
         weights = weights / (weights.mean(axis=1, keepdims=True) + 1e-8)
         
         self.weights = weights
-        
-        print("weights")
-        print(self.weights)
-    
-    
-        
         self.bin_indices = np.concat(bin_indices, axis = -1)
 
         if sample_fraction < 1.0:

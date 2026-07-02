@@ -329,8 +329,15 @@ def run_training(args: argparse.Namespace) -> None:
 
     gene_names = load_marker_genes(args.marker_genes)
 
+    if args.no_hvg == True and args.split_data == False:
+        train_data = args.dataset_path
+    elif args.split_data == False and args.no_hvg == False:
+        train_data = args.output_h5ad
+    elif args.split_data == True:
+        train_data = args.output_h5ad + "_ref.h5ad"
+
     train_hvae_main(
-        train_data_name=args.npy_dataset,
+        train_data_name=train_data,
         gene_names=gene_names,
         dataset_symbol=args.dataset_symbol,
         label_symbols=args.label_symbols,
