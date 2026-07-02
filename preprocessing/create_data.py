@@ -8,115 +8,25 @@ from sklearn.model_selection import train_test_split
 import pandas as pd
 import random
 
-def convert_object_to_int_with_nan(adata):
+def load_marker_genes(marker_gene_path: str) -> list[str]:
     """
-    Converts all columns in .var of an AnnData object that have dtype 'object'
-    but contain boolean values (with possible NaN) into integers (0 and 1),
-    preserving NaN values.
+    Load marker genes.
 
-    Parameters:
-    -----------
-    adata : AnnData
-        The AnnData object to process.
-
-    Returns:
-    --------
-    AnnData
-        The modified AnnData object with converted columns.
+    Kept the original line[:-1] behavior to avoid changing functionality.
+    You may want to replace this with line.strip() later.
     """
-    import numpy as np
-
-    # Identify object dtype columns
-    object_columns = adata.var.select_dtypes(include=["object"]).columns
-
-    # Iterate through object columns and check if they are boolean or NaN
-    for col in object_columns:
-        non_nan_values = adata.var[col].dropna()
-        if non_nan_values.isin([True, False]).all():
-            # Convert boolean to integer, preserving NaN
-            adata.var[col] = adata.var[col].apply(lambda x: int(x) if pd.notna(x) else np.nan)
-            print(f"Converted column '{col}' from boolean (object) to int, preserving NaN.")
-        else:
-            print(f"Column '{col}' has non-boolean values. Skipped.")
-
-    return adata
-    
+    with open(marker_gene_path) as handle:
+        return [line[:-1] for line in handle.readlines()]
 
 
-def ensembl_to_hugo_in_adata(
-    adata,
-    source="var_names",     # "var_names" or a column name in adata.var
-    target_col="gene_symbol",
-    species="human",
-    strip_version=True,
-    overwrite_var_names=False
-):
-    import mygene
-    
-    mg = mygene.MyGeneInfo()
 
 
-    if source == "var_names":
-        ensembl_ids = pd.Index(adata.var_names)
-    else:
-        if source not in adata.var.columns:
-            raise ValueError(f"source='{source}' not found in adata.var.columns.")
-        ensembl_ids = adata.var[source].astype(str)
-
-    if strip_version:
-        base_ids = ensembl_ids.to_series().str.replace(r"\.\d+$", "", regex=True)
-    else:
-        base_ids = ensembl_ids.to_series()
-
-
-    query_res = mg.querymany(
-        base_ids.tolist(),
-        scopes="ensembl.gene",
-        fields="symbol",
-        species=species,
-        as_dataframe=True
-    )
-
-
-    symbol_map = {}
-    for idx, row in query_res.iterrows():
-        if isinstance(row, pd.Series):
-            symbol = row.get("symbol", None)
-        else:
-            symbol = None
-        if isinstance(symbol, str):
-            symbol_map[idx] = symbol
-
-
-    mapped_symbols = base_ids.map(symbol_map).astype("object")
-    adata.var[target_col] = mapped_symbols.values
-
-
-    if overwrite_var_names:
-
-        new_var_names = adata.var[target_col].where(
-            ~adata.var[target_col].isna(),
-            other=ensembl_ids
-        )
-
-        new_var_names = pd.Index(new_var_names)
-        if not new_var_names.is_unique:
-            counts = {}
-            unique_names = []
-            for name in new_var_names:
-                if name not in counts:
-                    counts[name] = 0
-                    unique_names.append(name)
-                else:
-                    counts[name] += 1
-                    unique_names.append(f"{name}.dup{counts[name]}")
-            new_var_names = pd.Index(unique_names)
-
-        adata.var_names = new_var_names
-
-    return adata
-
-def preprocessing(marker_gene_list, dataset, full_name, samples_to_remove = None, test_size = 0.1, n_top_genes=10000, batch_key="batch",layer = "counts", flavor='seurat', no_hvg = False):
+def preprocessing(marker_gene_list, dataset, full_name,
+                  samples_to_remove = None,
+                  test_size = 0.1, n_top_genes=10000,
+                  batch_key="batch",layer = "counts",
+                  flavor='seurat', no_hvg = False,
+                  split_data = True):
 
     """
     Preprocess single-cell RNA-seq data for downstream analysis.
@@ -136,33 +46,34 @@ def preprocessing(marker_gene_list, dataset, full_name, samples_to_remove = None
         Filename for saving the query (test) dataset.
     samples_to_remove : list of str, optional
         List of sample IDs to exclude from the dataset (default: None).
-    test_size : float, optional
-        Fraction of samples to hold out as the test/query dataset (default: 0.1).
     n_top_genes : int, optional
         Number of highly variable genes to select (default: 10000).
     batch_key : str, optional
         Column in `adata.obs` used as batch annotation when finding HVGs (default: "dataset").
     layer : str, optional
         Name of the layer in `adata.layers` to use for HVG selection (default: "counts").
+    split_data : decides if test data should be split off
+    test_size : float, optional
+        Fraction of samples to hold out as the test/query dataset (default: 0.1).
 
     Outputs
     -------
-    Writes three AnnData objects:
+    if both hvg and split_data is used: writes three AnnData objects:
         - ref_name   : reference (train) dataset
         - query_name : query (test) dataset
         - full_name  : full processed dataset (HVGs + marker genes)
 
+    if only hvg is used:
+        - full_name  : full processed dataset (HVGs + marker genes)
     """
     
 
-    gene_symbol = [f[:-1] for f in open(marker_gene_list).readlines()]
+    gene_symbol = load_marker_genes(marker_gene_list)
     adata = sc.read(os.path.join(dataset))
 
     
     if samples_to_remove != None: 
         adata = adata[~adata.obs['SampleID'].isin(samples_to_remove)]
-        
-    X_train, X_test = train_test_split(range(0,adata.shape[0]), test_size = test_size)
 
     if no_hvg == False:
         subset_indices = [i for i, gene in enumerate(adata.var_names) if gene in set(gene_symbol)]
@@ -186,14 +97,17 @@ def preprocessing(marker_gene_list, dataset, full_name, samples_to_remove = None
         adata = adata[:, ~duplicates].copy()
 
         assert len(adata.var_names) == len(list(set(adata.var_names)))
+
+        adata.write(filename=full_name + ".h5ad")
         
 
-    adata_ref = adata[X_train].copy()
-    adata_query = adata[X_test].copy()
-    
-    adata_ref.write(filename= full_name+ "_ref.h5ad")
-    adata_query.write(filename= full_name+ "_query.h5ad")
-    adata.write(filename=  full_name + ".h5ad")
+    if split_data == True:
+        X_train, X_test = train_test_split(range(0, adata.shape[0]), test_size=test_size)
+        adata_ref = adata[X_train].copy()
+        adata_query = adata[X_test].copy()
+        adata_ref.write(filename= full_name+ "_ref.h5ad")
+        adata_query.write(filename= full_name+ "_query.h5ad")
+
 
     return
 
