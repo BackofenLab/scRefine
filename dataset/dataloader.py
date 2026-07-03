@@ -2,7 +2,7 @@ import torch
 from .sampler import ConcordSampler
 from .anndataset import AnnDataset
 from .knn import Neighborhood
-from .utils.anndata_utils import get_adata_basis
+from .anndata_utils import get_adata_basis
 from torch.utils.data import DataLoader
 import numpy as np
 import scanpy as sc
