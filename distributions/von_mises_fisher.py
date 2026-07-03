@@ -13,6 +13,11 @@ from distributions.hyperspherical_uniform import (
 
 
 class VonMisesFisher(torch.distributions.Distribution):
+    """
+    The von Mises-Fisher distribution: a directional (unit-vector) distribution on the
+    `(m-1)`-sphere, parameterized by a mean direction `loc` and concentration `scale`.
+    Uses rejection sampling for `m != 3` and a closed-form inverse-CDF sampler for `m == 3`.
+    """
 
     arg_constraints = {
         "loc": torch.distributions.constraints.real,
@@ -38,6 +43,15 @@ class VonMisesFisher(torch.distributions.Distribution):
         return self.scale
 
     def __init__(self, loc, scale, validate_args=None, k=1):
+        """
+        Args:
+            loc (Tensor): Unit-norm mean direction, shape (..., m).
+            scale (Tensor): Concentration parameter, shape (..., 1) (higher = more
+                concentrated around `loc`).
+            validate_args (bool, optional): Passed to `torch.distributions.Distribution`.
+            k (int, optional): Number of rejection-sampling candidates drawn per iteration
+                of `__while_loop`.
+        """
         self.dtype = loc.dtype
         self.loc = loc
         self.scale = scale
@@ -49,10 +63,22 @@ class VonMisesFisher(torch.distributions.Distribution):
         super().__init__(self.loc.size(), validate_args=validate_args)
 
     def sample(self, shape=torch.Size()):
+        """Draws samples without tracking gradients (see `rsample`)."""
         with torch.no_grad():
             return self.rsample(shape)
 
     def rsample(self, shape=torch.Size()):
+        """
+        Reparameterized sampling: draws the angle to `loc` via `__sample_w3`/`__sample_w_rej`,
+        combines it with a uniformly sampled orthogonal component, then rotates the result
+        so its mean direction matches `loc` (via `__householder_rotation`).
+
+        Args:
+            shape (torch.Size, optional): Extra leading sample-shape dimensions.
+
+        Returns:
+            Tensor: Unit vectors, shape `shape + loc.shape`.
+        """
         shape = shape if isinstance(shape, torch.Size) else torch.Size([shape])
 
         w = (
@@ -76,6 +102,7 @@ class VonMisesFisher(torch.distributions.Distribution):
         return z.type(self.dtype)
 
     def __sample_w3(self, shape):
+        """Closed-form inverse-CDF sample of the angle `w` for the m=3 (S^2) special case."""
         shape = shape + torch.Size(self.scale.shape)
         u = torch.distributions.Uniform(0, 1).sample(shape).to(self.device)
         self.__w = (
@@ -88,6 +115,7 @@ class VonMisesFisher(torch.distributions.Distribution):
         return self.__w
 
     def __sample_w_rej(self, shape):
+        """Rejection-sampled angle `w`, for the general m != 3 case, via `__while_loop`."""
         c = torch.sqrt((4 * (self.scale**2)) + (self.__m - 1) ** 2)
         b_true = (-2 * self.scale + c) / (self.__m - 1)
 
@@ -111,6 +139,7 @@ class VonMisesFisher(torch.distributions.Distribution):
 
     @staticmethod
     def first_nonzero(x, dim, invalid_val=-1):
+        """Returns the index of the first nonzero (truthy) entry along `dim`, or `invalid_val`."""
         mask = x > 0
         idx = torch.where(
             mask.any(dim=dim),
@@ -120,6 +149,14 @@ class VonMisesFisher(torch.distributions.Distribution):
         return idx
 
     def __while_loop(self, b, a, d, shape, k=20, eps=1e-20):
+        """
+        Batched acceptance-rejection sampling of the angle `w`: draws `k` candidates per
+        still-unaccepted sample each round (avoiding a per-sample Python loop) until every
+        sample has been accepted.
+
+        Returns:
+            tuple: `(e, w)` accepted auxiliary variable and angle, each shaped like `scale`.
+        """
         #  matrix while loop: samples a matrix of [A, k] samples, to avoid looping all together
         b, a, d = [
             e.repeat(*shape, *([1] * len(self.scale.shape))).reshape(-1, 1)
@@ -172,12 +209,14 @@ class VonMisesFisher(torch.distributions.Distribution):
         return e.reshape(shape), w.reshape(shape)
 
     def __householder_rotation(self, x):
+        """Rotates `x` (sampled around the pole `e1`) so its mean direction becomes `loc`."""
         u = self.__e1 - self.loc
         u = u / (u.norm(dim=-1, keepdim=True) + 1e-5)
         z = x - 2 * (x * u).sum(-1, keepdim=True) * u
         return z
 
     def entropy(self):
+        """Differential entropy of the distribution."""
         # option 1:
         output = (
             -self.scale
@@ -192,14 +231,17 @@ class VonMisesFisher(torch.distributions.Distribution):
         return output.view(*(output.shape[:-1])) + self._log_normalization()
 
     def log_prob(self, x):
+        """Log density of the vMF distribution at unit vectors `x`."""
         return self._log_unnormalized_prob(x) - self._log_normalization()
 
     def _log_unnormalized_prob(self, x):
+        """Unnormalized log density: `scale * <loc, x>`."""
         output = self.scale * (self.loc * x).sum(-1, keepdim=True)
 
         return output.view(*(output.shape[:-1]))
 
     def _log_normalization(self):
+        """Log of the vMF normalizing constant, in terms of the modified Bessel function `ive`."""
         output = -(
             (self.__m / 2 - 1) * torch.log(self.scale)
             - (self.__m / 2) * math.log(2 * math.pi)
@@ -211,4 +253,5 @@ class VonMisesFisher(torch.distributions.Distribution):
 
 @register_kl(VonMisesFisher, HypersphericalUniform)
 def _kl_vmf_uniform(vmf, hyu):
+    """KL(VonMisesFisher || HypersphericalUniform), registered for `torch.distributions.kl_divergence`."""
     return -vmf.entropy() + hyu.entropy()

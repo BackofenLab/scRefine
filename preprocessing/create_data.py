@@ -1,12 +1,8 @@
 import os
-import tempfile
 import numpy as np
 import scanpy as sc
-import seaborn as sns
 import anndata as ad
 from sklearn.model_selection import train_test_split
-import pandas as pd
-import random
 
 def load_marker_genes(marker_gene_path: str) -> list[str]:
     """

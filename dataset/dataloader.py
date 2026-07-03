@@ -8,20 +8,28 @@ import numpy as np
 import scanpy as sc
 import os
 import logging
+from scipy.sparse import issparse
 
 logger = logging.getLogger(__name__)
 
-from scipy.sparse import issparse
-import torch
 
 def create_bins(data, n_bins = 10):
+    """
+    Bin a 1D array of values into `n_bins` equal-width bins spanning [min(data), max(data)].
 
+    Args:
+        data (np.ndarray): 1D array of values to bin.
+        n_bins (int, optional): Number of bins. Defaults to 10.
+
+    Returns:
+        np.ndarray: Bin index for each value, scaled to [0, 1) by dividing by 10.
+    """
     bin_edges = np.linspace(np.min(data), np.max(data), n_bins + 1)
     bin_indices = np.digitize(data, bin_edges, right=False) - 1
     bin_indices = np.clip(bin_indices, 0, n_bins - 1)
-        
+
     return bin_indices/10
-    
+
 class AnnDataCollator:
     """
     A callable class to act as the collate_fn for the DataLoader.
@@ -30,23 +38,30 @@ class AnnDataCollator:
     def __init__(self, dataset,
                  dataset_key,
                  marker_genes):
+        """
+        Precomputes per-cell data needed for batching: dense log1p counts, integer-encoded
+        batch labels, and (if `marker_genes` is non-empty) binned expression for each marker
+        gene, used downstream as auxiliary prediction targets.
+
+        Args:
+            dataset (AnnDataset): The dataset whose `adata` provides the source data.
+            dataset_key (str): Column in `adata.obs` identifying the batch/dataset of origin.
+            marker_genes (list): Gene symbols to bin for auxiliary supervision. May be empty.
+        """
         self.dataset = dataset
 
         data_save = self.dataset.adata.X.toarray()
         batch_save = self.dataset.adata.obs[dataset_key]
         self.count_data = np.log1p(data_save)
         self.batch_dict = list(np.unique(batch_save))
-        self.batch = [self.batch_dict.index(a) for a in batch_save]
-        self.batches = self.batch
+        self.batches = [self.batch_dict.index(a) for a in batch_save]
         self.marker_genes = marker_genes
-        gene_data = self.dataset.adata.var_names 
+        gene_data = self.dataset.adata.var_names
         bin_indices = []
         self.prediction_genes = 0
-        
+
         gene_names = self.marker_genes
-        self.data_save = data_save 
-        #if return_label_ints:
-        #    self.label = self.label_int
+        self.data_save = data_save
 
         self.bin_indices = None
 
@@ -70,6 +85,18 @@ class AnnDataCollator:
             self.bin_indices = np.concat(bin_indices, axis = -1)
 
     def __call__(self, batch_indices):
+        """
+        Collates a list of dataset indices into a batch of tensors.
+
+        Args:
+            batch_indices (list[int]): Sample indices selected for this batch.
+
+        Returns:
+            tuple: `(X_tensor, class_tensor, domain_tensor, bins)`, where `X_tensor` is the
+                dense input features, `class_tensor` is the class labels (or None),
+                `domain_tensor` is the domain/batch labels, and `bins` is the binned marker
+                gene expression (or None if no marker genes were configured).
+        """
         # batch_indices is a list of indices from __getitem__
         idx = np.array(batch_indices, dtype=np.int64)
 
@@ -83,27 +110,16 @@ class AnnDataCollator:
         # 2. Convert the entire batch slice to dense at once
         if issparse(X_batch):
             X_batch = X_batch.toarray()
-        
+
         # 3. Convert to tensor
         X_tensor = torch.as_tensor(X_batch, dtype=torch.float32)
 
         # Prepare other items in the batch
         domain_tensor = self.dataset.domain_labels[idx]
-        
+
         class_tensor = None
         if self.dataset.class_labels is not None:
             class_tensor = self.dataset.class_labels[idx]
-            
-        covariate_tensors = {key: tensor[idx] for key, tensor in self.dataset.covariate_tensors.items()}
-
-        # Return a dictionary compatible with your model's forward pass
-        batch = {
-            'input': X_tensor,
-            'domain': domain_tensor,
-            'class': class_tensor,
-            'idx': torch.from_numpy(idx)
-        }
-        batch.update(covariate_tensors)
 
         return (
             X_tensor,
@@ -111,10 +127,7 @@ class AnnDataCollator:
             domain_tensor,
             bins,
         )
-        
-        
-        #return batch
-    
+
 
 class DataLoaderManager:
     """
@@ -145,7 +158,43 @@ class DataLoaderManager:
                  num_workers=None,
                  device=None):
         """
-        Initializes the DataLoaderManager.
+        Configures how AnnData objects are turned into train/val DataLoaders: which obs
+        columns to use as domain/class/covariate labels, whether to normalize/log1p the
+        data, and the sampling strategy (domain- and k-NN-aware `ConcordSampler`, or plain
+        batching when `use_sampler=False`).
+
+        Args:
+            domain_key (str): Column in `adata.obs` giving the domain/batch label used for
+                sampler-aware batching.
+            class_key (str, optional): Column in `adata.obs` giving class labels.
+            covariate_keys (list, optional): Columns in `adata.obs` treated as covariates.
+            feature_list (list, optional): If given, subsets `adata` to these var names.
+            normalize_total (bool, optional): Apply `sc.pp.normalize_total` before use.
+            log1p (bool, optional): Apply `sc.pp.log1p` before use.
+            batch_size (int, optional): Samples per batch.
+            train_frac (float, optional): Fraction of data used for training; the remainder
+                is held out for validation (or 1.0 to use everything for both, see
+                `anndata_to_dataloader`).
+            use_sampler (bool, optional): Whether to build a `ConcordSampler` for
+                domain/knn-aware batching, versus plain sequential batching.
+            sampler_knn (int, optional): Number of neighbors for the k-NN graph used by the
+                sampler.
+            sampler_emb (str, optional): Embedding key used to compute the k-NN graph.
+            sampler_domain_minibatch_strategy (str, optional): How many minibatches to draw
+                per domain: 'proportional', 'equal', or 'coverage'.
+            domain_coverage (dict, optional): Per-domain coverage weights, required when
+                `sampler_domain_minibatch_strategy='coverage'`.
+            p_intra_knn (float, optional): Probability of sampling from k-NN neighborhoods.
+            p_intra_domain (float, optional): Probability of sampling within the same domain.
+            dist_metric (str, optional): Distance metric for the k-NN index.
+            use_faiss (bool, optional): Use FAISS for k-NN search when available.
+            use_ivf (bool, optional): Use a FAISS IVF index instead of flat search.
+            ivf_nprobe (int, optional): Number of probes for the FAISS IVF index.
+            preload_dense (bool, optional): Load the full dense matrix into memory upfront
+                instead of using the memory-efficient `AnnDataCollator`.
+            num_workers (int, optional): DataLoader worker processes. Defaults to 0 when
+                `preload_dense=True`, else `min(4, os.cpu_count())`.
+            device (torch.device, optional): Device used for domain-id tensors and sampler.
         """
         self.domain_key = domain_key
         self.class_key = class_key
@@ -204,16 +253,38 @@ class DataLoaderManager:
         return structure
     
 
-    def compute_neighborhood(self, adata, emb_key): # Pass adata and emb_key
+    def compute_neighborhood(self, adata, emb_key):
+        """
+        Builds and stores a k-NN `Neighborhood` index over the given embedding, for use by
+        the sampler when `p_intra_knn > 0`.
+
+        Args:
+            adata (AnnData): AnnData object containing the embedding.
+            emb_key (str): Key identifying the embedding in `adata.obsm`/`adata.layers`, or
+                `'X'` to use `adata.X` directly.
+        """
         logger.info(f"Computing k-NN graph using embedding from '{emb_key}'...")
         emb = get_adata_basis(adata, basis=emb_key)
         self.neighborhood = Neighborhood(
-            emb=emb, k=self.sampler_knn, use_faiss=self.use_faiss, 
+            emb=emb, k=self.sampler_knn, use_faiss=self.use_faiss,
             use_ivf=self.use_ivf, ivf_nprobe=self.ivf_nprobe, metric=self.dist_metric
         )
 
 
     def build_sampler(self, SamplerClass, indices=None, neighborhood=None):
+        """
+        Instantiates a batch sampler over the manager's domain ids.
+
+        Args:
+            SamplerClass (type): Sampler class to construct (e.g. `ConcordSampler`).
+            indices (np.ndarray, optional): Subset of sample indices to restrict the sampler
+                to (used for train/val splits). Defaults to using all samples.
+            neighborhood (Neighborhood, optional): Precomputed k-NN index to pass to the
+                sampler for knn-aware batching.
+
+        Returns:
+            Sampler: The constructed sampler instance.
+        """
         domain_ids = self.domain_ids if indices is None else self.domain_ids[indices]
         sampler = SamplerClass(
             batch_size=self.batch_size, 
@@ -231,13 +302,25 @@ class DataLoaderManager:
     def anndata_to_dataloader(self, adata,dataset_key, marker_genes, split_val = False
                                 ):
         """
-        Converts an AnnData object to PyTorch DataLoader.
+        Converts an AnnData object into PyTorch DataLoaders, applying the configured
+        normalization/log1p/feature-subsetting steps and building the domain-aware sampler
+        (if enabled) and collator.
 
         Args:
             adata (AnnData): The input AnnData object.
+            dataset_key (str): Column in `adata.obs` identifying the batch/dataset of origin,
+                used by the collator to encode domain labels.
+            marker_genes (list): Marker gene symbols used for auxiliary binned-expression
+                targets in the collator. May be empty.
+            split_val (bool, optional): When `train_frac < 1.0`, whether to hold out a
+                distinct validation subset (True) or reuse the full dataset for validation
+                (False). Defaults to False.
 
         Returns:
-            tuple: Train DataLoader, validation DataLoader (if `train_frac < 1.0`), and data structure.
+            tuple: `(train_dataloader, val_dataloader, data_structure, data_infos)`, where
+                `data_structure` lists the fields returned per sample and `data_infos` is
+                `[batches, data, input_size, num_batches, num_marker_genes]` derived from the
+                training collator (empty list when `use_sampler=False`).
         """
         self.adata = adata
 
@@ -254,8 +337,7 @@ class DataLoaderManager:
             logger.info(f"Filtering features with provided list ({len(self.feature_list)} features)...")
             self.adata = self.adata[:, self.feature_list].copy()     # <-- copy!
             if issparse(self.adata.X):
-                self.adata.X.sort_indices()        
-            #self.adata = self.adata[:, self.feature_list]
+                self.adata.X.sort_indices()
 
         self.domain_labels = self.adata.obs[self.domain_key]
         self.domain_ids = torch.tensor(self.domain_labels.cat.codes.values, dtype=torch.long).to(self.device)
@@ -283,23 +365,11 @@ class DataLoaderManager:
                                                     )
                 self.train_sampler = self.build_sampler(ConcordSampler, neighborhood=self.neighborhood)
                 
-                train_dataloader = DataLoader(dataset, batch_sampler=self.train_sampler, 
+                train_dataloader = DataLoader(dataset, batch_sampler=self.train_sampler,
                                               num_workers=self.num_workers,
                                               collate_fn=train_collate,
                                               pin_memory=True)
-                                              
-                        
-                
 
-
-                #batches_out = train_collate.batches
-                #data_out = train_collate.data_save
-                #size_ = np.shape(data_out)[1]
-                ##num_batches = len(train_collate.batch_dict.key())
-                #number_marker_genes = train_collate.prediction_genes
-                
-                #data_infos = [batches_out,data_out,size_, num_batches, number_marker_genes]
-                
                 batches_out = train_collate.batches
                 data_out = train_collate.data_save
                 size_ = np.shape(data_out)[1]
@@ -331,16 +401,11 @@ class DataLoaderManager:
                                                     )
                     val_collate   = AnnDataCollator(val_dataset, dataset_key=dataset_key, marker_genes=marker_genes,
                                                     )
-                train_dataloader = DataLoader(train_dataset, batch_sampler=self.train_sampler, 
+                train_dataloader = DataLoader(train_dataset, batch_sampler=self.train_sampler,
                                               num_workers=self.num_workers,
                                               collate_fn=train_collate,
                                               pin_memory=True)
-                
-                # self.val_sampler = self.build_sampler(ConcordSampler, indices=val_indices, neighborhood=None)
-                # val_dataloader = DataLoader(val_dataset, batch_sampler=self.val_sampler, 
-                #                             num_workers=self.num_workers,
-                #                              collate_fn=my_collate_fn,
-                #                              pin_memory=True)
+
                 val_dataloader = DataLoader(
                     val_dataset,
                     batch_size=self.batch_size,

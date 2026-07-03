@@ -1,39 +1,35 @@
 import numpy as np
-import logging
-import time
-import os
-import json
 from sklearn.manifold import TSNE
-import time
-from sklearn.neighbors import NearestNeighbors
-from scipy.stats import entropy
-import glob
-import random
-import pandas as pd
-from sklearn.mixture import GaussianMixture
-from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-from sklearn.neighbors import KNeighborsClassifier, RadiusNeighborsClassifier
+from sklearn.neighbors import RadiusNeighborsClassifier
 from sklearn.preprocessing import StandardScaler
 import argparse
 from scanpy.tl import leiden
 from scanpy.pp import neighbors
 import anndata as ad
-import plotly.express as px
+from plotting import plot_tsne
 
-def plot_tsne(projections, batches, name):
-    
 
-    fig = px.scatter(
-        projections, x=0, y=1,
-        color=batches, labels={'color': 'batches'}
-    )
-    fig.write_html(name) 
-    return
-
-    
 def train_knn(data_x, data_y, train_fraction=0.4, confidence_threshold=0.5, random_state=42):
+    """
+    Fits a radius-neighbors classifier and flags low-confidence predictions.
+
+    Args:
+        data_x (array-like): Feature matrix (e.g. TSNE embeddings).
+        data_y (array-like): Integer class labels.
+        train_fraction (float, optional): Fraction of data used for the stratified
+            train/test split (the split itself is unused downstream; kept for parity with
+            the fitted model's usage). Defaults to 0.4.
+        confidence_threshold (float, optional): Predictions with max class probability below
+            this value are flagged as low-confidence. Defaults to 0.5.
+        random_state (int, optional): Random seed for the train/test split. Defaults to 42.
+
+    Returns:
+        tuple: `(indices_of_interest, model, data_x, data_y, confidences, confidences2, probs)`
+            where `indices_of_interest` are indices with confidence below the threshold,
+            `confidences` is the predicted probability of each sample's true class, and
+            `confidences2` is the max predicted probability per sample.
+    """
 
     data_x_train, data_x_test, data_y_train, data_y_test = train_test_split(
         data_x, data_y, train_size=train_fraction, stratify=data_y, random_state=random_state
@@ -56,7 +52,27 @@ def train_knn(data_x, data_y, train_fraction=0.4, confidence_threshold=0.5, rand
     return indices_of_interest, model, data_x, data_y, confidences, confidences2, probs
     
 def clean_up(data, filtered_data_output, conf_data, plots, labels = None, cluster_min = 0.2, quantil = 0.2, quantil_max = 0.3):
+    """
+    Filters low-confidence embeddings out of a saved embedding file, per cluster.
 
+    Loads embeddings from `data`, clusters them (Leiden on a k-NN graph if `labels` is None,
+    otherwise a saved label array), TSNE-projects them, fits a k-NN confidence model, and
+    for each cluster keeps only samples whose confidence is above a per-cluster quantile
+    threshold (clamped to `[cluster_min, quantil_max]`). Saves confidence and filtered
+    results to disk, and writes TSNE scatter plots at each stage.
+
+    Args:
+        data (str): Path to an `.npz` file containing an 'embedding' array (and optionally
+            the label array named by `labels`).
+        filtered_data_output (str): Output `.npz` path for the filtered embeddings/labels.
+        conf_data (str): Output `.npz` path for the unfiltered embeddings with confidences.
+        plots (str): Prefix used for the output TSNE plot HTML files.
+        labels (str, optional): Key in `data` holding labels; if None, Leiden clustering is
+            used to derive labels. Defaults to None.
+        cluster_min (float, optional): Minimum confidence threshold per cluster.
+        quantil (float, optional): Quantile of per-cluster confidence used as the cutoff.
+        quantil_max (float, optional): Maximum confidence threshold per cluster.
+    """
     loaded = np.load(data)
     embeddings = loaded["embedding"]
 
@@ -126,46 +142,3 @@ def clean_up(data, filtered_data_output, conf_data, plots, labels = None, cluste
     return
 
 
-if __name__ == "__main__":
-
-    cmdline_parser = argparse.ArgumentParser('clean up data')
-
-
-    cmdline_parser.add_argument('-d', '--data',
-                                help='data',
-                                default = 'embedding.npz',
-                                type=str)
-    cmdline_parser.add_argument('-f', '--filtered_data_output',
-                                help='data',
-                                default = 'filtered_data.npz',
-                                type=str)
-    cmdline_parser.add_argument('-c', '--conf_data',
-                                help='data',
-                                default = 'conf_data.npz',
-                                type=str)
-    cmdline_parser.add_argument('-p', '--plots',
-                                help='plot',
-                                default = 'data',
-                                type=str)
-    cmdline_parser.add_argument('-p', '--labels',
-                                help='label used for cleanup/leiden if None',
-                                default = None,
-                                type=str)
-    cmdline_parser.add_argument('-p', '--cluster_min',
-                                help='plot',
-                                default = 0.2,
-                                type=float)
-    cmdline_parser.add_argument('-p', '--quantil',
-                                help='plot',
-                                default = 0.2,
-                                type=float)
-    cmdline_parser.add_argument('-p', '--quantil_max',
-                                help='plot',
-                                default = 0.3,
-                                type=float)
-                                
-    args, unknowns = cmdline_parser.parse_known_args()
-    clean_up(args.data, args.filtered_data_output, args.conf_data,
-             plots=args.plots, labels = args.labels, cluster_min = args.cluster_min,
-             quantil = args.quantil, quantil_max = args.quantil_max)
-    

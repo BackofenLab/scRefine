@@ -1,5 +1,4 @@
 import os
-import json
 import torch
 import numpy as np
 from sklearn.neighbors import KNeighborsClassifier
@@ -7,10 +6,8 @@ from sklearn.metrics import accuracy_score
 from sklearn.metrics import f1_score
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
-from sklearn.manifold import TSNE
 import time
 from models.classifier import Classifier
-from torch.utils.data import DataLoader
 from torch.utils.data import TensorDataset
 from sklearn.model_selection import train_test_split
 import argparse
@@ -18,18 +15,36 @@ from train_simclr import main as main_simclr
         
 
 def load_embedding_data(data_path):
+    """
+    Loads a saved `.npz` embedding file.
 
+    Args:
+        data_path (str): Path to an `.npz` file with 'embedding' and 'labels' arrays.
+
+    Returns:
+        tuple: `(embeddings, labels)` arrays.
+    """
     data = np.load(data_path, allow_pickle = True)
     print(data)
     embeddings = data["embedding"]
     labels = data["labels"]
-    
+
     return embeddings, labels
 
 
 
 def train_classifier(data_path, classification_output, model_path):
+    """
+    Trains a small MLP `Classifier` on saved embeddings to predict their integer-encoded
+    labels, printing train/validation metrics each epoch. Saves the trained model's state
+    dict and the final validation predictions.
 
+    Args:
+        data_path (str): Path to the `.npz` embedding file (see `load_embedding_data`).
+        classification_output (str): Output `.npz` path for validation labels, predictions,
+            and raw classifier outputs.
+        model_path (str): Output path for the trained classifier's state dict.
+    """
     device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
     embeddings, labels = load_embedding_data(data_path)
     
@@ -50,17 +65,12 @@ def train_classifier(data_path, classification_output, model_path):
     train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=32, shuffle=True)
     
 
-    num_classes = len(label_set)
     classifier_model = Classifier(np.shape(embeddings)[1], 250, len(label_set)).to(device)
     classifier_model.train()
 
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(classifier_model.parameters(), lr=0.001)
 
-    val_reps = []
-    val_recons = []
-    val_inputs = []
-    val_labels = []
     epochs = 100
     eval_every = 1
 
@@ -84,10 +94,7 @@ def train_classifier(data_path, classification_output, model_path):
         correct = 0
         total = 0
         classifier_model.eval()
-        pred_labels = []
-        true_labels = []
         val_labels = []
-        val_reps = []
         label_prediction = []
         classifier_out = []
             
@@ -102,15 +109,10 @@ def train_classifier(data_path, classification_output, model_path):
                 _, predicted = torch.max(val_outputs.data, 1)
                 total += label.size(0)
                 correct += (predicted == label).sum().item()
-                pred_labels.extend(predicted.cpu().numpy().tolist())
-                true_labels.extend(label.cpu().numpy().tolist())
-                    
-                    
+
                 val_labels.extend(label.cpu().numpy().tolist())
-                val_reps.extend(data.cpu().numpy().tolist())
                 label_prediction.extend(predicted.cpu().numpy().tolist())
                 classifier_out.extend(val_outputs.cpu().numpy().tolist())
-                _ = None
 
 
             val_loss /= len(val_dataset)
@@ -126,7 +128,14 @@ def train_classifier(data_path, classification_output, model_path):
     return
 
 def predict_classifier(data, model_path, output_path):
+    """
+    Runs a trained `Classifier` checkpoint over saved embeddings and saves predicted labels.
 
+    Args:
+        data (str): Path to the `.npz` embedding file (see `load_embedding_data`).
+        model_path (str): Path to the classifier's saved state dict.
+        output_path (str): Output `.npy` path for the predicted label indices.
+    """
     device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
     
     pred_labels = []
@@ -153,15 +162,23 @@ def predict_classifier(data, model_path, output_path):
             pred_labels.extend(predicted.cpu().numpy().tolist())
                     
     np.save(output_path, pred_labels)
-        
+
     return
 
 
-
-
-    
 def evaluate_kmeans(data):
+    """
+    Evaluates K-Means clustering of saved embeddings against ground-truth labels, using a
+    small exemplar-labeled subset per cluster to assign cluster-to-class mappings, then
+    scores a k-NN classifier trained on those pseudo-labels.
 
+    Sweeps `num_clusters` over multiples of the true class count and prints, for each
+    setting, silhouette scores before/after exemplar-based relabeling and the resulting
+    k-NN accuracy/F1 against the true labels.
+
+    Args:
+        data (str): Path to the `.npz` embedding file (see `load_embedding_data`).
+    """
     device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
     embeddings, labels = load_embedding_data(data)
     label_set =  list(np.unique(labels))

@@ -185,8 +185,6 @@ class ConcordSampler(Sampler):
                 batch_global_in_domain_count = int(self.p_intra_domain * (self.batch_size - batch_knn_count))
                 batch_global_out_domain_count = self.batch_size - batch_knn_count - batch_global_in_domain_count
 
-                #print(f"batch_knn_count: {batch_knn_count}, batch_knn_in_domain_count: {batch_knn_in_domain_count}, batch_knn_out_domain_count: {batch_knn_out_domain_count}, batch_global_in_domain_count: {batch_global_in_domain_count}, batch_global_out_domain_count: {batch_global_out_domain_count}")
-
                 batch_knn_in_domain = self._permute_nonneg_and_fill(knn_in_domain, batch_knn_in_domain_count)
                 batch_knn_out_domain = self._permute_nonneg_and_fill(knn_out_domain, batch_knn_out_domain_count)
                 batch_knn = torch.cat((batch_knn_in_domain, batch_knn_out_domain), dim=1) 
@@ -236,9 +234,7 @@ class ConcordSampler(Sampler):
             torch.Tensor: A batch of sample indices.
         """
         self.valid_batches = self._generate_batches()
-            
-        # avg_seen = len(torch.cat(list(self.valid_batches)).unique()) / len(self.domain_ids)
-        # print(f"Fraction of cells seen this epoch: {avg_seen:.5f}")
+
         for batch in self.valid_batches:
             yield batch.tolist()
 

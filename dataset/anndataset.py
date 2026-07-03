@@ -147,6 +147,17 @@ class AnnDataset(Dataset):
     
 
     def __getitem__(self, idx):
+        """
+        Returns a sample for the given index.
+
+        Args:
+            idx (int): Index of the sample.
+
+        Returns:
+            dict or int: When `preload_dense=True`, a dict with 'input', 'domain', 'idx',
+                and (if configured) 'class' and covariate tensors for the sample. Otherwise,
+                just `idx`, to be resolved into a full sample later by `AnnDataCollator`.
+        """
         if self.preload_dense:
             # Return a complete dictionary for the sample.
             # PyTorch's default collator will stack these dicts into a batch.

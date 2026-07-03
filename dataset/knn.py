@@ -5,7 +5,6 @@ from sklearn.neighbors import NearestNeighbors
 import logging
 import math
 import torch
-import logging
 import scanpy as sc
 PKG_ROOT = __package__.split(".")[0]          # → "concord"
 logger   = logging.getLogger(f"{PKG_ROOT}")
@@ -49,14 +48,6 @@ class Neighborhood:
         Raises:
             ValueError: If there are NaN values in the embedding or if the metric is invalid.
         """
-        
-        #emb = sc.pp.log1p(emb)
-        #emb = emb.toarray()
-        print(emb)
-        print(type(emb))
-        #if np.isnan(emb).any():
-        #    raise ValueError("There are NaN values in the emb array.")
-
         # Store the original embedding in float32
         self.emb = np.ascontiguousarray(emb).astype(np.float32)
 

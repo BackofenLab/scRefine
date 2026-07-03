@@ -9,9 +9,18 @@ from numbers import Number
 
 
 class IveFunction(torch.autograd.Function):
+    """Autograd wrapper for the exponentially scaled modified Bessel function `I_v(z) * e^-z`."""
+
     @staticmethod
     def forward(self, v, z):
+        """
+        Args:
+            v (Number): Bessel function order (scalar, not differentiated).
+            z (Tensor): Input values.
 
+        Returns:
+            Tensor: `ive(v, z)`, computed via `scipy.special` (i0e/i1e/ive as appropriate).
+        """
         assert isinstance(v, Number), "v must be a scalar"
 
         self.save_for_backward(z)
@@ -32,6 +41,7 @@ class IveFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(self, grad_output):
+        """Gradient of `ive(v, z)` w.r.t. `z`, via the Bessel recurrence relation."""
         z = self.saved_tensors[-1]
         return (
             None,
@@ -40,11 +50,15 @@ class IveFunction(torch.autograd.Function):
 
 
 class Ive(torch.nn.Module):
+    """Module wrapper around `IveFunction` for a fixed order `v`."""
+
     def __init__(self, v):
+        """Args: v (Number): Fixed Bessel function order."""
         super(Ive, self).__init__()
         self.v = v
 
     def forward(self, z):
+        """Args: z (Tensor): Input values. Returns: Tensor: `ive(v, z)`."""
         return ive(self.v, z)
 
 
@@ -60,12 +74,14 @@ ive = IveFunction.apply
 
 # source: https://arxiv.org/pdf/1606.02008.pdf
 def ive_fraction_approx(v, z):
+    """Lower-bound approximation of the Bessel fraction `I_(v/2)(z) / I_(v/2 - 1)(z)`."""
     # I_(v/2)(k) / I_(v/2 - 1)(k) >= z / (v-1 + ((v+1)^2 + z^2)^0.5
     return z / (v - 1 + torch.pow(torch.pow(v + 1, 2) + torch.pow(z, 2), 0.5))
 
 
 # source: https://arxiv.org/pdf/1902.02603.pdf
 def ive_fraction_approx2(v, z, eps=1e-20):
+    """Averaged two-point approximation of the Bessel fraction `I_(v/2)(z) / I_(v/2 - 1)(z)`."""
     def delta_a(a):
         lamb = v + (a - 1.0) / 2.0
         return (v - 0.5) + lamb / (

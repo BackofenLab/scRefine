@@ -1,51 +1,36 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
-import torch
-import inspect
-from torch import Tensor
-from typing import Literal, Callable
 import numpy as np
-from torch.utils.data import DataLoader
-import pandas as pd
-from torch.utils.data import Subset
-from torch.utils.data import Dataset
-from collections.abc import Sequence
-from torch.utils.data import (
-    BatchSampler,
-    DataLoader,
-    RandomSampler,
-    Sampler,
-    SequentialSampler,
-)
-import scipy.sparse as sp_sparse
-from uuid import uuid4
-from typing import NamedTuple
-from collections import defaultdict
-import logging
-import warnings
-from pathlib import Path
-import os
-from pandas.api.types import CategoricalDtype
-from copy import deepcopy
 import collections
 from pyro.distributions.zero_inflated import ZeroInflatedNegativeBinomial
 import pytorch_lightning as pl
-import torch.optim as optim
 from torch.optim.lr_scheduler import StepLR
 from torch.distributions import Normal, kl_divergence
-from sklearn.preprocessing import LabelEncoder
 from torch.optim import Adam
 
 _identity = lambda x: x
         
         
 class ZINB(nn.Module):
+    """Zero-inflated negative binomial negative log-likelihood loss."""
+
     def __init__(self, eps=1e-8):
+        """Args: eps (float, optional): Numerical stability floor for clamps/logs."""
         super().__init__()
         self.eps = eps
 
     def forward(self, x, mu, theta, pi):
+        """
+        Args:
+            x (Tensor): Observed counts.
+            mu (Tensor): Negative binomial mean.
+            theta (Tensor): Pre-softplus dispersion parameter.
+            pi (Tensor): Zero-inflation (dropout) probability.
+
+        Returns:
+            Tensor: Scalar mean negative log-likelihood over the batch.
+        """
         eps = self.eps
         softplus_theta = torch.nn.functional.softplus(theta)
 
@@ -79,8 +64,20 @@ class ZINB(nn.Module):
 
 
 def embedding_distance_loss(embeddings, indices, decay_factor=0.1):
+    """
+    Distance-weighted loss between two groups of embeddings (selected by `indices` in
+    {0, 1}): the mean pairwise L2 distance between groups, weighted by
+    `exp(-decay_factor * distance)` (clipped to [0, 5]) so nearby cross-group pairs
+    contribute more.
 
+    Args:
+        embeddings (Tensor): Embeddings for all samples, shape (N, D).
+        indices (Tensor): Group assignment per sample; only values 0 and 1 are used.
+        decay_factor (float, optional): Controls how quickly the distance weight decays.
 
+    Returns:
+        Tensor: Scalar loss, the average of the two directional weighted mean distances.
+    """
     group_0 = embeddings[indices == 0]
     group_1 = embeddings[indices == 1]
     
@@ -102,8 +99,22 @@ def embedding_distance_loss(embeddings, indices, decay_factor=0.1):
     return (mean_dist_01 + mean_dist_10) / 2
 
 def kl_divergence_gmm(q_pi, q_mu, q_sigma, p_mu, p_sigma, p_pi):
-    
-    batch_size = q_mu.shape[0]  
+    """
+    KL divergence between a per-sample Gaussian-mixture posterior `q(z, c)` and a Gaussian-
+    mixture prior `p(z, c)`, marginalized over the discrete component `c`.
+
+    Args:
+        q_pi (Tensor): Posterior component responsibilities, shape (batch, num_components).
+        q_mu (Tensor): Posterior means per component, shape (batch, num_components, dim).
+        q_sigma (Tensor): Posterior std devs per component, same shape as `q_mu`.
+        p_mu (Tensor): Prior means per component, shape (num_components, dim) or (1, ...).
+        p_sigma (Tensor): Prior std devs per component, same shape as `p_mu`.
+        p_pi (Tensor): Prior component probabilities, shape (num_components,).
+
+    Returns:
+        Tensor: Per-sample KL divergence, shape (batch,).
+    """
+    batch_size = q_mu.shape[0]
 
     p_mu = p_mu.unsqueeze(0).expand(batch_size, -1, -1)  
     p_sigma = p_sigma.unsqueeze(0).expand(batch_size, -1, -1)  
@@ -219,6 +230,7 @@ class FCLayers(nn.Module):
         )
 
     def inject_into_layer(self, layer_num) -> bool:
+        """Returns whether covariates should be concatenated into hidden layer `layer_num`."""
         user_cond = layer_num == 0 or (layer_num > 0 and self.inject_covariates)
         return user_cond
 
@@ -304,6 +316,23 @@ class EncoderHVAE(nn.Module):
         return_dist = False,
         **kwargs,
     ):
+        """
+        Args:
+            n_input (int): Input feature dimensionality.
+            n_output (int): Latent dimensionality.
+            n_cat_list (list[int], optional): Category counts for each categorical covariate.
+            n_layers (int, optional): Number of hidden layers in the shared trunk.
+            n_hidden (int, optional): Hidden layer width.
+            dropout_rate (float, optional): Dropout applied in the shared trunk.
+            distribution (str, optional): Latent distribution; `"ln"` applies a softmax to
+                the sample (logistic-normal), otherwise the raw Gaussian sample is returned.
+            var_eps (float, optional): Additive floor for the variance.
+            var_activation (Callable, optional): Activation mapping raw variance output to a
+                positive variance. Defaults to `torch.exp`.
+            return_dist (bool, optional): If True, `forward` returns `(dist, latent)` instead
+                of `(mean, var, latent)`.
+            **kwargs: Additional keyword arguments forwarded to `FCLayers`.
+        """
         super().__init__()
 
         self.distribution = distribution
@@ -328,7 +357,14 @@ class EncoderHVAE(nn.Module):
         self.var_activation = torch.exp if var_activation is None else var_activation
 
     def forward(self, x: torch.Tensor, *cat_list: int):
+        """
+        Args:
+            x (Tensor): Input features, shape (batch, n_input).
+            *cat_list (Tensor): Categorical covariate tensors forwarded to `FCLayers`.
 
+        Returns:
+            tuple: `(dist, latent)` if `return_dist=True`, else `(mean, variance, latent)`.
+        """
         q = self.encoder(x, *cat_list)
 
         q_m = self.mean_encoder(q)
@@ -342,12 +378,30 @@ class EncoderHVAE(nn.Module):
             return dist, latent
 
         return q_m, q_v, latent
-        
-class EncoderHVAE2(nn.Module):
 
+class EncoderHVAE2(nn.Module):
+    """
+    Encodes a library-size/component distribution: per-GMM-component mean and variance for
+    the library size, plus a softmax over components (`q_pi`).
+    """
 
     def __init__(self, n_input, n_output, n_cat_list = None, n_layers = 1, n_hidden = 128, dropout_rate = 0.1, distribution = "normal", var_eps = 1e-4, return_dist = False,
     var_activation = None):
+        """
+        Args:
+            n_input (int): Input feature dimensionality.
+            n_output (int): Number of GMM components.
+            n_cat_list (list[int], optional): Category counts for each categorical covariate.
+            n_layers (int, optional): Number of hidden layers in the shared trunk.
+            n_hidden (int, optional): Hidden layer width.
+            dropout_rate (float, optional): Dropout applied in the shared trunk.
+            distribution (str, optional): Unused by `forward` (kept for interface parity
+                with `EncoderHVAE`).
+            var_eps (float, optional): Additive floor for the variance.
+            return_dist (bool, optional): Unused by `forward` (kept for interface parity).
+            var_activation (Callable, optional): Activation mapping raw variance output to a
+                positive variance. Defaults to `torch.exp`.
+        """
         super().__init__()
 
         self.distribution = distribution
@@ -372,60 +426,30 @@ class EncoderHVAE2(nn.Module):
         self.var_activation = torch.exp if var_activation is None else var_activation
 
     def forward(self, x: torch.Tensor, *cat_list: int):
+        """
+        Args:
+            x (Tensor): Input features, shape (batch, n_input).
+            *cat_list (Tensor): Categorical covariate tensors forwarded to `FCLayers`.
 
+        Returns:
+            tuple: `(q_pi, mean, variance)`, where `q_pi` is a softmax over GMM components.
+        """
         q = self.encoder(x, *cat_list)
         q_m = self.mean_encoder(q)
         q_v = self.var_activation(self.var_encoder(q)) + self.var_eps
         q_pi = self.mean_encoder2(q)
 
         return torch.nn.functional.softmax(q_pi), q_m, q_v
-        
-class DecoderHVAE(nn.Module):
 
-    def __init__(self, n_input, n_output, n_cat_list= None, n_layers = 1, n_hidden = 128, inject_covariates = True, use_batch_norm = False, use_layer_norm = False, scale_activation = "softmax"
-    ):
-        super().__init__()
-        self.px_decoder = FCLayers(
-            n_in=n_input,
-            n_out=n_hidden,
-            n_cat_list=n_cat_list,
-            n_layers=n_layers,
-            n_hidden=n_hidden,
-            dropout_rate=0,
-            inject_covariates=inject_covariates,
-        )
-
-        if scale_activation == "softmax":
-            px_scale_activation = nn.Softmax(dim=-1)
-        elif scale_activation == "softplus":
-            px_scale_activation = nn.Softplus()
-        self.px_scale_decoder = nn.Sequential(
-            nn.Linear(n_hidden, n_output),
-            px_scale_activation,
-        )
-
-        self.px_r_decoder = nn.Linear(n_hidden, n_output)
-
-        self.px_dropout_decoder = nn.Linear(n_hidden, n_output)
-
-    def forward(
-        self,
-        dispersion: str,
-        z: torch.Tensor,
-        library: torch.Tensor,
-        covariates: torch.Tensor,
-        *cat_list: int,
-    ):
-
-        px = self.px_decoder(z, *cat_list)
-        px_scale = self.px_scale_decoder(px)
-        px_dropout = torch.nn.functional.relu(self.px_dropout_decoder(px))
-        px_rate = torch.nn.functional.relu(torch.exp(library) * px_scale) 
-        px_r = torch.nn.functional.relu(self.px_r_decoder(px)) if dispersion == "gene-cell" else None
-        return px_scale, px_r, px_rate, px_dropout
-        
 class LearnableGMMPrior(nn.Module):
+    """A learnable Gaussian-mixture prior over a low-dimensional (e.g. library-size) space."""
+
     def __init__(self, latent_dim, num_components):
+        """
+        Args:
+            latent_dim (int): Dimensionality of each Gaussian component.
+            num_components (int): Number of mixture components.
+        """
         super().__init__()
         self.num_components = num_components
         self.latent_dim = latent_dim
@@ -434,17 +458,33 @@ class LearnableGMMPrior(nn.Module):
         self.log_sigma = nn.Parameter(torch.zeros(num_components, latent_dim))
 
     def forward(self):
-        pi = torch.softmax(self.pi_logits, dim=0) 
+        """Returns: tuple: `(mu, sigma, pi)` — component means, std devs, and mixture weights."""
+        pi = torch.softmax(self.pi_logits, dim=0)
         sigma = torch.exp(self.log_sigma)
         return self.mu, sigma, pi
 
 
 class DecoderHVAE3(nn.Module):
+    """Decodes a latent `z` (plus library size and covariates) into ZINB parameters."""
 
     def __init__(
         self, n_input, n_output, n_cat_list = None, n_layers = 1, n_hidden = 128, inject_covariates = True,
         use_batch_norm = False, use_layer_norm = False, scale_activation = "softmax",
     ):
+        """
+        Args:
+            n_input (int): Latent dimensionality.
+            n_output (int): Number of genes to decode.
+            n_cat_list (list[int], optional): Category counts for each categorical covariate.
+            n_layers (int, optional): Number of hidden layers in the shared trunk.
+            n_hidden (int, optional): Hidden layer width.
+            inject_covariates (bool, optional): Whether covariates are concatenated into
+                every hidden layer, or only the first.
+            use_batch_norm (bool, optional): Use BatchNorm in the shared trunk.
+            use_layer_norm (bool, optional): Use LayerNorm in the shared trunk.
+            scale_activation (str, optional): Activation for `px_scale`: `"softmax"` or
+                `"softplus"`.
+        """
         super().__init__()
         self.px_decoder = FCLayers(n_in=n_input, n_out=n_hidden, n_cat_list=n_cat_list, n_layers=n_layers,
             n_hidden=n_hidden, dropout_rate=0, inject_covariates=inject_covariates, use_batch_norm=use_batch_norm,
@@ -463,7 +503,18 @@ class DecoderHVAE3(nn.Module):
         self.px_dropout_decoder = nn.Linear(n_hidden, n_output)
 
     def forward(self, dispersion: str,z: torch.Tensor, library: torch.Tensor, covariates: torch.Tensor,*cat_list: int,):
+        """
+        Args:
+            dispersion (str): `"gene-cell"` to compute a per-gene-per-cell dispersion `px_r`
+                from the decoder, or anything else to skip it (caller supplies `px_r`).
+            z (Tensor): Latent representation, shape (batch, n_input).
+            library (Tensor): Log library size, shape (batch, 1), used to scale `px_rate`.
+            covariates (Tensor): Covariate tensor forwarded to the decoder trunk.
+            *cat_list (Tensor): Categorical covariate tensors forwarded to `FCLayers`.
 
+        Returns:
+            tuple: `(px_scale, px_r, px_rate, px_dropout)` ZINB parameters.
+        """
         px = self.px_decoder(z, *cat_list)
         px_scale = self.px_scale_decoder(px)
         px_dropout = torch.nn.functional.relu(self.px_dropout_decoder(px))
@@ -476,6 +527,17 @@ class DecoderHVAE3(nn.Module):
         
 @torch.no_grad()
 def _mmd_rbf(x, y, sigmas=(0.5, 1.0, 2.0, 4.0, 8.0)):
+    """
+    Unbiased multi-scale RBF-kernel maximum mean discrepancy between two sample sets.
+
+    Args:
+        x (Tensor): First sample set, shape (m, D).
+        y (Tensor): Second sample set, shape (n, D).
+        sigmas (tuple[float], optional): RBF kernel bandwidths to sum over.
+
+    Returns:
+        Tensor: Scalar MMD estimate.
+    """
     def pdist2(a, b):
         a2 = (a * a).sum(dim=1, keepdim=True)
         b2 = (b * b).sum(dim=1, keepdim=True).t()
@@ -503,6 +565,29 @@ def gmvae_kl_with_mmd(
     *, mmd_weight=0.1, mmd_sigmas=(0.5,1.0,2.0,4.0,8.0), reduction="mean",
     sample_for_mmd=True
 ):
+    """
+    GMVAE-style latent loss: a component-marginalized Gaussian KL term (`kl_z_given_c` +
+    `kl_c`) plus an MMD term between samples from `q(z)` and the GMM prior, which helps
+    stabilize training compared to the analytic KL alone.
+
+    Args:
+        z_mu (Tensor): Posterior mean, shape (B, D).
+        z_logvar (Tensor): Posterior log-variance, shape (B, D).
+        logits_q_c (Tensor): Unnormalized posterior component logits, shape (B, K).
+        p_mu (Tensor): Prior component means, shape (K, D).
+        p_logvar (Tensor): Prior component log-variances, shape (K, D).
+        p_pi (Tensor): Unnormalized prior component weights, shape (K,).
+        mmd_weight (float, optional): Weight applied to the MMD term in the returned total.
+        mmd_sigmas (tuple[float], optional): RBF kernel bandwidths for the MMD term.
+        reduction (str, optional): `"mean"` or `"sum"` over the batch for the KL terms.
+        sample_for_mmd (bool, optional): Sample `z` from `q(z)` for the MMD term (True), or
+            use `z_mu` directly (False).
+
+    Returns:
+        tuple: `(total, pieces)` where `total = kl_z_given_c + kl_c + mmd_weight * mmd`
+            (reduced per `reduction`), and `pieces` is a dict with the individual
+            'kl_z_given_c', 'kl_c', and 'mmd' terms.
+    """
     eps = 1e-8
     B, D = z_mu.shape
     K, Dp = p_mu.shape
@@ -554,22 +639,37 @@ def gmvae_kl_with_mmd(
 
 
 class LearnableGMMPriorZ(nn.Module):
+    """A learnable Gaussian-mixture prior over the main latent space `z` (log-var parameterized)."""
+
     def __init__(self, z_dim, num_components):
+        """
+        Args:
+            z_dim (int): Dimensionality of the latent space.
+            num_components (int): Number of mixture components.
+        """
         super().__init__()
         self.z_dim = z_dim
         self.K = num_components
         self.mu = nn.Parameter(torch.randn(self.K, z_dim) * 0.01)
         self.logvar = nn.Parameter(torch.zeros(self.K, z_dim))
-        self.logits_pi = nn.Parameter(torch.zeros(self.K)) 
+        self.logits_pi = nn.Parameter(torch.zeros(self.K))
 
     def forward(self):
-        p_mu = self.mu                          
-        p_logvar = self.logvar                  
-        p_pi = F.softmax(self.logits_pi, dim=0) 
+        """Returns: tuple: `(mu, logvar, pi)` — component means, log-variances, and mixture weights."""
+        p_mu = self.mu
+        p_logvar = self.logvar
+        p_pi = F.softmax(self.logits_pi, dim=0)
         return p_mu, p_logvar, p_pi
 
 
 class HVAE_Lightning(pl.LightningModule):
+    """
+    A hierarchical VAE (PyTorch Lightning module) for single-cell counts: a Gaussian latent
+    `z` with a learnable GMM prior, a GMM-modeled library size, a ZINB decoder, and an
+    auxiliary marker-gene prediction head, trained with an annealed KL weight and an MMD
+    regularizer on the latent space.
+    """
+
     def __init__(
         self, n_input, n_latent=10, n_hidden=128, n_layers=1,
         encode_covariates=False, ln=False,
@@ -586,6 +686,37 @@ class HVAE_Lightning(pl.LightningModule):
         kl_anneal_warmup_epochs=20,  # linear warm-up length
         kl_anneal_max=0.5,           # plateau value after warm-up
     ):
+        """
+        Args:
+            n_input (int): Number of genes.
+            n_latent (int, optional): Dimensionality of the latent space `z`.
+            n_hidden (int, optional): Unused directly here; hidden width is fixed per
+                sub-module (kept for interface parity).
+            n_layers (int, optional): Number of hidden layers in the encoder/decoder trunks.
+            encode_covariates (bool, optional): Concatenate batch covariate embeddings into
+                the encoder input.
+            ln (bool, optional): Unused by this model (kept for interface/CLI parity).
+            lr (float, optional): Adam learning rate.
+            kl_weight (float, optional): Starting KL weight for annealing.
+            mmd_weight (float, optional): Weight of the MMD term in the latent loss.
+            n_batch (int, optional): Number of batches/domains, sized for the covariate
+                embedding and per-batch library baseline.
+            num_components (int, optional): Number of GMM components for the latent prior
+                and the library-size distribution.
+            reconstruction_weight (float, optional): Weight of the ZINB reconstruction loss.
+            gene_factor (int, optional): Weight of the auxiliary marker-gene MSE loss.
+            prediction_genes (int, optional): Number of marker genes predicted by the
+                auxiliary head.
+            random_assignment (bool, optional): Sample a random GMM component for the
+                library size in `forward`, instead of using the observed batch label.
+            dispersion (str, optional): `"gene-cell"` uses the decoder's per-cell dispersion;
+                `"gene"` uses a learned per-gene dispersion parameter instead.
+            gene_dropout_shared (bool, optional): When `dispersion="gene"`, also use a
+                learned per-gene (rather than decoder-produced) dropout gate.
+            kl_anneal_warmup_epochs (int, optional): Epochs over which the KL weight is
+                linearly annealed from `kl_weight` to `kl_anneal_max`.
+            kl_anneal_max (float, optional): KL weight after annealing completes.
+        """
         super().__init__()
         self.save_hyperparameters()
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -629,6 +760,14 @@ class HVAE_Lightning(pl.LightningModule):
         self.kl_anneal_max = kl_anneal_max
 
     def one_hot_encode(self, labels, num_classes):
+        """
+        Args:
+            labels (Tensor): Integer class labels, shape (batch,).
+            num_classes (int): Number of classes.
+
+        Returns:
+            Tensor: One-hot encoding, shape (batch, num_classes).
+        """
         batch_size = labels.shape[0]
         one_hot = torch.zeros(batch_size, num_classes, device=labels.device)
         one_hot.scatter_(1, labels.unsqueeze(1), 1)
@@ -646,7 +785,16 @@ class HVAE_Lightning(pl.LightningModule):
 
 
     def get_dataset_baseline(self, counts, batch_data, n_batch):
+        """
+        Computes and registers the per-batch mean log library size as a buffer
+        (`loglib_baseline_per_batch`), used as an offset for the sampled library size
+        in `forward`.
 
+        Args:
+            counts (array-like): Raw per-cell count matrix, shape (n_cells, n_genes).
+            batch_data (array-like): Integer batch id per cell, shape (n_cells,).
+            n_batch (int): Total number of batches.
+        """
         lib_b = torch.empty(n_batch)
         for b in range(n_batch):
             s = torch.tensor(counts[np.array(batch_data) == b].sum(1)).clamp_min(1.)
@@ -657,6 +805,23 @@ class HVAE_Lightning(pl.LightningModule):
 
     # ---------- forward ----------
     def forward(self, x, gene, covariates=None):
+        """
+        Encodes `x` to a latent `z` and library size, then decodes ZINB parameters and an
+        auxiliary marker-gene prediction.
+
+        Args:
+            x (Tensor): Input counts, shape (batch, n_input).
+            gene (array-like): Unused by `forward` itself; kept for call-site parity with
+                `compute_loss`, which takes the marker-gene targets separately.
+            covariates (Tensor, optional): Integer batch labels, shape (batch,). Used both
+                as the covariate embedding input and to select/offset the library size.
+
+        Returns:
+            dict: Model outputs, including latent stats (`z_mu`, `z_var`, `z`), library-size
+                stats (`l_pi`, `l_mu`, `l_var`, `library`, `ql`), decoder outputs (`px_scale`,
+                `px_r_dec`, `px_rate`, `px_dropout_dec`), the component logits `logits_q_c`,
+                and the auxiliary `gene_pred`.
+        """
         assert not torch.isinf(x).any(), "inf detected in input data!"
         assert not torch.isnan(x).any(), "NaN detected in input data!"
         assert covariates is None or not torch.isnan(covariates).any(), "NaN detected in covariates input!"
@@ -672,10 +837,6 @@ class HVAE_Lightning(pl.LightningModule):
 
         c = torch.multinomial(l_pi, num_samples=1).squeeze()
         if self.random_assignment == False and batch_labels is not None:
-            std = torch.sqrt(l_var + 1e-8)
-            library = l_mu[torch.arange(len(batch_labels)), batch_labels] + \
-                      std[torch.arange(len(batch_labels)), batch_labels] * torch.randn_like(l_var[:, 0])
-
             std = torch.sqrt(l_var + 1e-8)                           # [B,K]
             lib_sample = l_mu[torch.arange(len(batch_labels)), batch_labels] + \
                       std[torch.arange(len(batch_labels)), batch_labels] * torch.randn_like(l_var[:, 0])
@@ -709,6 +870,20 @@ class HVAE_Lightning(pl.LightningModule):
 
     # ---------- loss ----------
     def compute_loss(self, x, output, gene):
+        """
+        Computes the total training loss: a ZINB reconstruction term, an annealed KL term
+        (latent `z` + library size, via `gmvae_kl_with_mmd`/`kl_divergence_gmm`), and an
+        auxiliary marker-gene MSE term.
+
+        Args:
+            x (Tensor): Input counts, shape (batch, n_input).
+            output (dict): The dict returned by `forward`.
+            gene (array-like): Marker-gene targets, shape (batch, prediction_genes).
+
+        Returns:
+            dict: `{"train_loss": ..., "recon": ..., "kl_z_total": ..., "kl_l": ...,
+                "gene_aux": ..., "kl_weight_eff": ..., "mmd": ...}`.
+        """
         eps = 1e-5
         z_mu, z_var = output["z_mu"], output["z_var"]
         l_pi, l_mu, l_var = output["l_pi"], output["l_mu"], output["l_var"]
@@ -762,8 +937,7 @@ class HVAE_Lightning(pl.LightningModule):
             validate_args=False
         )
 
-        x_nonneg = x
-        zzn = -zinb.log_prob(x_nonneg).mean(dim=-1)  # [B]
+        zzn = -zinb.log_prob(x).mean(dim=-1)  # [B]
 
         recon = zzn.mean() * self.reconstruction_weight
 
@@ -771,16 +945,6 @@ class HVAE_Lightning(pl.LightningModule):
         ce_loss_val = ce_loss(torch.clip(gene_pred.float(), max=2), gene.float())
         kl_w = self._current_kl_weight()
         loss = (recon + kl_w * (kl_z_total + kl_l)) * 0.1 + self.gene_factor * ce_loss_val
-
-        """
-        with torch.no_grad():
-            print("x_counts stats  min/max/mean:", x.min().item(), x.max().item(), x.float().mean().item())
-            print("mu:", px_rate.min().item(), px_rate.max().item(), px_rate.float().mean().item())
-            print("nb_probs:", nb_probs.min().item(), nb_probs.max().item(), nb_probs.float().mean().item())
-            print("total counts:", px_r.min().item(), px_r.max().item(), px_r.float().mean().item())
-            print("gate:", px_dropout.min().item(), px_dropout.max().item(), px_dropout.float().mean().item())
-            print("#################################################################################")
-        """
 
         logs = {
             "recon": recon.detach(),
@@ -794,6 +958,18 @@ class HVAE_Lightning(pl.LightningModule):
 
 
     def training_step(self, batch, batch_idx):
+        """
+        Lightning training step: runs `forward` + `compute_loss` on `batch` and logs the
+        loss components.
+
+        Args:
+            batch (tuple): `(x, class_labels, covariates, gene)` as produced by the
+                `AnnDataCollator`.
+            batch_idx (int): Batch index (unused; required by the Lightning interface).
+
+        Returns:
+            Tensor: The scalar training loss for this batch.
+        """
         x, _, covariates, gene = batch if self.encode_covariates else (batch, None)
 
         output = self(x, gene, covariates)
@@ -809,6 +985,7 @@ class HVAE_Lightning(pl.LightningModule):
         return loss_dict["train_loss"]
 
     def configure_optimizers(self):
+        """Lightning hook: Adam optimizer with a step-decay LR schedule (halves every 7 epochs)."""
         optimizer = Adam(self.parameters(), lr=self.lr, weight_decay=1e-4)
         scheduler = StepLR(optimizer, step_size=7, gamma=0.5)
         return {

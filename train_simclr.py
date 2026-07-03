@@ -2,30 +2,11 @@ import numpy as np
 import torch
 from models.encoder import Encoder
 import scanpy as sc
-import logging
-import time
 import os
-import json
-from collections import Counter
 from sklearn.manifold import TSNE
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, classification_report
-from sklearn.preprocessing import LabelEncoder, StandardScaler
-from torch.utils.data import TensorDataset
 import argparse
 from dataset.dataloader import DataLoaderManager
-from sklearn.manifold import TSNE
-import plotly.express as px
-
-
-def plot_tsne(projections, batches, name):
-    fig = px.scatter(
-        projections, x=0, y=1,
-        color=batches, labels={'color': 'batches'}
-    )
-    fig.write_html(name)
-    return
-
+from plotting import plot_tsne
 
 
 def main(train_data_name,
@@ -43,7 +24,29 @@ def main(train_data_name,
          sample_fraction = 0.1,
          contrastive_model = "contrastive_model.pkl",
          plot_name = None):
+    """
+    Trains a SimClr-style contrastive `Encoder` on single-cell data with an NT-Xent loss,
+    then embeds the validation split and saves the resulting embeddings/labels.
 
+    Args:
+        train_data_name (str): Path to the input `.h5ad` dataset.
+        gene_names (list): Marker gene symbols forwarded to the data loader (may be empty).
+        dataset_symbol (str): Column in `adata.obs` used as the domain/batch key.
+        label_symbols (str): Column in `adata.obs` used as the class key for the
+            contrastive loss's positive-pair mask.
+        embedding_save (str): Output `.npz` path for the saved embeddings and labels.
+        latent_dim (int, optional): Dimensionality of the encoder's projection head output.
+        learning_rate (float, optional): Adam learning rate.
+        batch_size (int, optional): Training batch size.
+        num_epochs (int, optional): Number of training epochs.
+        eval_every (int, optional): Epoch interval at which the model checkpoint is saved.
+        print_every (int, optional): Epoch interval at which training loss is printed.
+        temperature (float, optional): Temperature for the NT-Xent contrastive loss.
+        sample_fraction (float, optional): Fraction of data used for training (passed as
+            `train_frac` to `DataLoaderManager`); the remainder is used for validation.
+        contrastive_model (str, optional): Output path for the trained encoder's state dict.
+        plot_name (str, optional): If given, saves a TSNE plot of the final embeddings here.
+    """
     device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
     seed = 42
     np.random.seed(seed)

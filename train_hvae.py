@@ -1,21 +1,23 @@
 import numpy as np
 import torch
 from models.vae import HVAE_Lightning
-import logging
-import time
 import os
-import json
-from sklearn.neighbors import NearestNeighbors
-from scipy.stats import entropy
 from pytorch_lightning import Trainer
-import random
 from pytorch_lightning.callbacks import EarlyStopping
-import argparse
 from dataset.dataloader import DataLoaderManager
 import scanpy as sc
 
 
 def save_validate(dataloader, model, save_embedding):
+    """
+    Runs `model` over `dataloader` in eval mode and saves the resulting latent means,
+    domain/batch labels, and input labels to an `.npz` file.
+
+    Args:
+        dataloader (DataLoader): Yields `(data, label_data, batched_data, gene)` batches.
+        model (HVAE_Lightning): Trained model providing `forward` and returning `z_mu`.
+        save_embedding (str): Output `.npz` path for the embeddings/batches/labels.
+    """
     device = "cpu"
     
     mu_list = []
@@ -55,8 +57,49 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
             kl_anneal_warmup_epochs = 20, kl_anneal_max = 0.5, 
              save_embedding = "embedding.npz",
              model_checkpoint = "model.ckpt", count_symbol = None, random_assignment = False):
+    """
+    Trains an `HVAE_Lightning` model on single-cell data: builds domain-aware DataLoaders,
+    fits the model with early stopping on training loss, saves the model checkpoint, and
+    embeds the validation split.
 
+    Args:
+        train_data_name (str): Path to the input `.h5ad` training dataset.
+        gene_names (list): Marker gene symbols used for the auxiliary gene-prediction head.
+        dataset_symbol (str): Column in `adata.obs` used as the domain/batch key.
+        label_symbols (str): Unused by this function directly; kept for CLI/pipeline parity.
+        data_symbol (str): Unused by this function directly; kept for CLI/pipeline parity.
+        gene_symbol (str): Unused by this function directly; kept for CLI/pipeline parity.
+        val_data_path (str, optional): Unused by this function; reserved for future support
+            of a separate validation dataset.
+        num_epochs (int, optional): Maximum number of training epochs.
+        latent_dim (int, optional): Dimensionality of the VAE latent space.
+        hidden_dim (int, optional): Hidden layer width for the encoder/decoder.
+        layers (int, optional): Number of hidden layers in the encoder/decoder.
+        learning_rate (float, optional): Learning rate (an unused optimizer is also built
+            with this value; the model's own optimizer, from `configure_optimizers`, is what
+            the Lightning `Trainer` actually uses).
+        batch_size (int, optional): Batch size (only used for the `AnnDataCollator`'s
+            baseline library-size computation; the sampler determines actual batch sizes).
+        patience (int, optional): Early-stopping patience on `train_loss`.
+        encode_covariates (bool, optional): Whether to concatenate batch covariate
+            embeddings into the encoder input.
+        ln (bool, optional): Whether to use layer normalization in the decoder.
+        gene_factor (int, optional): Weight of the auxiliary marker-gene prediction loss.
+        kl_weight (float, optional): Starting KL weight for annealing.
+        mmd_weight (float, optional): Weight of the MMD term in the latent KL loss.
+        reconstruction_weight (float, optional): Weight of the reconstruction loss.
+        kl_anneal_warmup_epochs (int, optional): Epochs over which KL weight is annealed.
+        kl_anneal_max (float, optional): KL weight after annealing completes.
+        save_embedding (str, optional): Output `.npz` path for the validation embeddings.
+        model_checkpoint (str, optional): Output path for the Lightning model checkpoint.
+        count_symbol (str, optional): Unused by this function; reserved for a normalized
+            count layer/column selector.
+        random_assignment (bool, optional): Whether the model samples a random GMM component
+            for the library size instead of using the observed batch label.
 
+    Returns:
+        None
+    """
     device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
     train_adata = sc.read(os.path.join(train_data_name))
 

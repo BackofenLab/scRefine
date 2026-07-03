@@ -5,10 +5,11 @@ import numpy as np
 import torch
 
 from clean_data import clean_up
-from preprocessing.create_data import preprocessing
+from preprocessing.create_data import preprocessing, load_marker_genes
 from train_hvae import main as train_hvae_main
 
 def print_banner(message: str) -> None:
+    """Print `message` centered in a row of `#` characters, to mark pipeline stages."""
     print(f"#################################### {message} #########################################")
 
 
@@ -26,16 +27,6 @@ def set_seed(seed: int = 42) -> None:
 
     os.environ["PYTHONHASHSEED"] = str(seed)
 
-def load_marker_genes(marker_gene_path: str) -> list[str]:
-    """
-    Load marker genes.
-
-    Kept the original line[:-1] behavior to avoid changing functionality.
-    You may want to replace this with line.strip() later.
-    """
-    with open(marker_gene_path) as handle:
-        return [line[:-1] for line in handle.readlines()]
-
 def get_obs_fields(obs_fields: list[str], dataset_symbol: str) -> list[str]:
     """
     Add the dataset/batch symbol to obs fields and remove duplicates.
@@ -48,6 +39,10 @@ def get_obs_fields(obs_fields: list[str], dataset_symbol: str) -> list[str]:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """
+    Builds the CLI argument parser for the full pipeline, grouped into preprocessing,
+    training, cleanup, and additional-load-fields argument groups.
+    """
     parser = argparse.ArgumentParser(
         description="Handles data preprocessing, training and cleanup."
     )
@@ -304,6 +299,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_preprocessing(args: argparse.Namespace) -> None:
+    """Runs marker-gene/HVG selection and optional train/test splitting via `preprocessing`."""
     print_banner("running pre-processing")
 
     preprocessing(
@@ -319,6 +315,11 @@ def run_preprocessing(args: argparse.Namespace) -> None:
 
 
 def run_training(args: argparse.Namespace) -> None:
+    """
+    Trains the HVAE model on the appropriate preprocessing output: the raw dataset when
+    `no_hvg` and not `split_data`, the full HVG output when only `no_hvg` is False, or the
+    reference split when `split_data` is True.
+    """
     print_banner("training")
 
     gene_names = load_marker_genes(args.marker_genes)
@@ -360,6 +361,7 @@ def run_training(args: argparse.Namespace) -> None:
     )
 
 def run_cleanup(args: argparse.Namespace) -> None:
+    """Runs confidence-based embedding cleanup via `clean_up`, unless `--no_cleanup` is set."""
     print_banner("data cleanup")
 
     if not args.no_cleanup:
@@ -376,11 +378,10 @@ def run_cleanup(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    """Entry point: parses CLI args and runs preprocessing, training, then cleanup in order."""
     parser = build_parser()
     args = parser.parse_args()
-
     set_seed()
-
     run_preprocessing(args)
     run_training(args)
     run_cleanup(args)
