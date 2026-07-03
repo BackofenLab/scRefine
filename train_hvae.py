@@ -36,7 +36,8 @@ def save_validate(dataloader, model, save_embedding):
             mu = output["z_mu"]
             mu_list.extend(mu.detach().cpu().numpy())
         
-    np.savez(save_embedding, embedding = mu_list, batches = np.array(batched_data_list), labels = np.array(label_data_list))
+    np.savez(save_embedding, embedding = mu_list, batches = np.array(batched_data_list),
+             labels = np.array(label_data_list))
 
     return 
 
@@ -60,38 +61,43 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
     train_adata = sc.read(os.path.join(train_data_name))
 
     data_manager = DataLoaderManager(
-            domain_key="dataset", 
+            domain_key=dataset_symbol,
             class_key=None, 
             covariate_keys=None, 
             feature_list=None,
             normalize_total=False,
             log1p=False,    
-            batch_size=32, 
+            batch_size=33,
             train_frac=1.0,
             use_sampler=True,
-            sampler_emb="X_pca",
-            sampler_knn=10,
+            sampler_emb=None,
+            sampler_knn=None,
             sampler_domain_minibatch_strategy='proportional',
             domain_coverage=None,
             dist_metric='euclidean', 
-            p_intra_knn=0.3, 
-            p_intra_domain=1.0, 
+            p_intra_knn=0.0,
+            p_intra_domain=0.7,
             use_faiss=True, 
             use_ivf=True, 
             ivf_nprobe=10, 
             preload_dense=False,
             device=torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     )
-        
-    train_dataloader, val_dataloader, data_structure, info = data_manager.anndata_to_dataloader(train_adata)
+
+
+
+    train_dataloader, val_dataloader, data_structure, info = data_manager.anndata_to_dataloader(train_adata, dataset_symbol,gene_names)
     batches_out,data_out,size_, num_batches, number_marker_genes = info
+
+    print(train_dataloader)
+    print(val_dataloader)
 
     model = HVAE_Lightning(n_input=size_, n_latent=latent_dim,n_hidden = hidden_dim, n_layers=layers,
                             encode_covariates=encode_covariates, ln = ln, num_components = num_batches, 
                             gene_factor = gene_factor, prediction_genes = number_marker_genes, 
                             n_batch = num_batches, random_assignment = random_assignment, kl_weight = kl_weight, 
                             mmd_weight = mmd_weight, reconstruction_weight = reconstruction_weight,
-                            kl_anneal_warmup_epochs = kl_anneal_warmup_epochs, kl_anneal_max = kl_anneal_max, weights = None)
+                            kl_anneal_warmup_epochs = kl_anneal_warmup_epochs, kl_anneal_max = kl_anneal_max)
     model.to(device)
     model.get_dataset_baseline(data_out, batches_out, n_batch = num_batches)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)

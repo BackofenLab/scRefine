@@ -67,12 +67,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="preprocessing output h5ad",
     )
     preprocessing_args.add_argument(
-        "--npy_dataset",
-        type=str,
-        default="output.npz",
-        help="output npy dataset",
-    )
-    preprocessing_args.add_argument(
         "--dataset_symbol",
         type=str,
         default="batch",
@@ -95,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
     )
     preprocessing_args.add_argument(
-        "--test_split",
+        "--test_size",
         type=float,
         default=0.1,
         help="default test split if split_data is True",

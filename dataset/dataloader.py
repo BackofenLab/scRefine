@@ -27,44 +27,47 @@ class AnnDataCollator:
     A callable class to act as the collate_fn for the DataLoader.
     This is pickleable and works with multiple workers.
     """
-    def __init__(self, dataset):
+    def __init__(self, dataset,
+                 dataset_key,
+                 marker_genes):
         self.dataset = dataset
 
         data_save = self.dataset.adata.X.toarray()
-        batch_save = self.dataset.adata.obs["dataset"]
-        gene_data_save = self.dataset.adata.var_names
+        batch_save = self.dataset.adata.obs[dataset_key]
         self.count_data = np.log1p(data_save)
         self.batch_dict = list(np.unique(batch_save))
         self.batch = [self.batch_dict.index(a) for a in batch_save]
         self.batches = self.batch
+        self.marker_genes = marker_genes
         gene_data = self.dataset.adata.var_names 
         bin_indices = []
         self.prediction_genes = 0
         
-        gene_names = [a[:-1] for a in open("marker_genes.txt").readlines()]
+        gene_names = self.marker_genes
         self.data_save = data_save 
         #if return_label_ints:
         #    self.label = self.label_int
+
+        self.bin_indices = None
+
+        if len(self.marker_genes) != 0:
         
-        print(gene_data) 
-        for gene_sym in gene_names:
-            try:
-                relevant_int = list(gene_data).index(gene_sym)
-                relevant_data = self.count_data[:,relevant_int]
-                bin_data = np.expand_dims(create_bins(relevant_data, n_bins = 10),axis=-1)
-                bin_indices.append(bin_data)
-                self.prediction_genes = self.prediction_genes + 1
-            except:
-                print("skipped: " + str(gene_sym))
+            for gene_sym in gene_names:
+                try:
+                    relevant_int = list(gene_data).index(gene_sym)
+                    relevant_data = self.count_data[:,relevant_int]
+                    bin_data = np.expand_dims(create_bins(relevant_data, n_bins = 10),axis=-1)
+                    bin_indices.append(bin_data)
+                    self.prediction_genes = self.prediction_genes + 1
+                except:
+                    print("skipped: " + str(gene_sym))
         
-        counts = np.zeros((self.prediction_genes, 10), dtype=np.int64)
-        for bin_num, bin_data in enumerate(bin_indices):
-            for data in bin_data:
-                counts[bin_num, int(data*10)] += 1
+            counts = np.zeros((self.prediction_genes, 10), dtype=np.int64)
+            for bin_num, bin_data in enumerate(bin_indices):
+                for data in bin_data:
+                    counts[bin_num, int(data*10)] += 1
                 
-        self.bin_indices = np.concat(bin_indices, axis = -1)
-        
-        
+            self.bin_indices = np.concat(bin_indices, axis = -1)
 
     def __call__(self, batch_indices):
         # batch_indices is a list of indices from __getitem__
@@ -72,7 +75,10 @@ class AnnDataCollator:
 
         # 1. Efficiently slice the sparse matrix for the whole batch
         X_batch = self.dataset.adata.X[idx]
-        bins = self.bin_indices[idx]
+
+        bins = None
+        if len(self.marker_genes) != 0:
+            bins = self.bin_indices[idx]
 
         # 2. Convert the entire batch slice to dense at once
         if issparse(X_batch):
@@ -101,7 +107,7 @@ class AnnDataCollator:
 
         return (
             X_tensor,
-            domain_tensor,
+            class_tensor,
             domain_tensor,
             bins,
         )
@@ -222,7 +228,8 @@ class DataLoaderManager:
         return sampler
 
 
-    def anndata_to_dataloader(self, adata):
+    def anndata_to_dataloader(self, adata,dataset_key, marker_genes, split_val = False
+                                ):
         """
         Converts an AnnData object to PyTorch DataLoader.
 
@@ -272,7 +279,8 @@ class DataLoaderManager:
                 if self.preload_dense:
                     train_collate = None
                 else:
-                    train_collate = AnnDataCollator(dataset)
+                    train_collate = AnnDataCollator(dataset, dataset_key=dataset_key, marker_genes=marker_genes,
+                                                    )
                 self.train_sampler = self.build_sampler(ConcordSampler, neighborhood=self.neighborhood)
                 
                 train_dataloader = DataLoader(dataset, batch_sampler=self.train_sampler, 
@@ -301,14 +309,8 @@ class DataLoaderManager:
                 data_infos = [batches_out,data_out,size_, num_batches, number_marker_genes]
 
 
-
-                
-                
-                
-                val_dataloader = None
-
-
-                val_dataloader = DataLoader(dataset,batch_size = 32, shuffle = False, collate_fn=train_collate)
+                val_dataloader = DataLoader(dataset,batch_size = self.batch_size,
+                                            shuffle = False, collate_fn=train_collate)
 
             else:
                 train_size = int(self.train_frac * len(dataset))
@@ -317,15 +319,18 @@ class DataLoaderManager:
                 train_indices = indices[:train_size]
                 val_indices = indices[train_size:]
                 train_dataset = dataset.subset(train_indices)
-                val_dataset = dataset.subset(val_indices)
+                if split_val == True: val_dataset = dataset.subset(val_indices)
+                else: val_dataset = dataset
 
                 self.train_sampler = self.build_sampler(ConcordSampler, indices=train_indices, neighborhood=None)
                 if self.preload_dense:
                     train_collate = None
                     val_collate   = None
                 else:
-                    train_collate = AnnDataCollator(train_dataset)
-                    val_collate   = AnnDataCollator(val_dataset)
+                    train_collate = AnnDataCollator(train_dataset, dataset_key=dataset_key, marker_genes=marker_genes,
+                                                    )
+                    val_collate   = AnnDataCollator(val_dataset, dataset_key=dataset_key, marker_genes=marker_genes,
+                                                    )
                 train_dataloader = DataLoader(train_dataset, batch_sampler=self.train_sampler, 
                                               num_workers=self.num_workers,
                                               collate_fn=train_collate,
@@ -344,11 +349,22 @@ class DataLoaderManager:
                     collate_fn=val_collate,
                     pin_memory=True,
                 ) # Uniform sampler instead of ConcordSampler for validation
+
+                batches_out = train_collate.batches
+                data_out = train_collate.data_save
+                size_ = np.shape(data_out)[1]
+                num_batches = len(train_collate.batch_dict)
+                number_marker_genes = train_collate.prediction_genes
+
+                data_infos = [batches_out,data_out,size_, num_batches, number_marker_genes]
+
+
         else: 
             if self.preload_dense:
                 train_collate = None
             else:
-                train_collate = AnnDataCollator(dataset)
+                train_collate = AnnDataCollator(dataset, dataset_key=dataset_key, marker_genes=marker_genes,
+                                                    )
             train_dataloader = DataLoader(dataset, batch_size=self.batch_size, 
                                           num_workers=self.num_workers,  
                                            collate_fn=train_collate,

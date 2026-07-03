@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 from models.encoder import Encoder
-from dataset.singlecell import SingleCellDataset
+import scanpy as sc
 import logging
 import time
 import os
@@ -13,37 +13,81 @@ from sklearn.metrics import accuracy_score, classification_report
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from torch.utils.data import TensorDataset
 import argparse
+from dataset.dataloader import DataLoaderManager
+from sklearn.manifold import TSNE
+import plotly.express as px
 
 
-def main(train_data_name, gene_names, dataset_symbol, label_symbols,  data_symbol, gene_symbol, embedding_save, latent_dim = 1024, learning_rate = 0.0001, batch_size = 32, num_epochs = 100, eval_every = 1, print_every = 1, temperature = 0.5, sample_fraction = 0.1, contrastive_model = "contrastive_model.pkl"):
+def plot_tsne(projections, batches, name):
+    fig = px.scatter(
+        projections, x=0, y=1,
+        color=batches, labels={'color': 'batches'}
+    )
+    fig.write_html(name)
+    return
+
+
+
+def main(train_data_name,
+         gene_names,
+         dataset_symbol,
+         label_symbols,
+         embedding_save,
+         latent_dim = 1024,
+         learning_rate = 0.0001,
+         batch_size = 32,
+         num_epochs = 100,
+         eval_every = 1,
+         print_every = 1,
+         temperature = 0.5,
+         sample_fraction = 0.1,
+         contrastive_model = "contrastive_model.pkl",
+         plot_name = None):
 
     device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
     seed = 42
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    train_dataset = SingleCellDataset(gene_names = gene_names, dataset_symbol = dataset_symbol, label_symbols = label_symbols,  data_symbol = data_symbol, gene_symbol = gene_symbol, data_path=train_data_name, sample_fraction=sample_fraction, return_label_ints = True)
 
-    #### use full for plotting
-    val_dataset = SingleCellDataset(gene_names = gene_names, dataset_symbol = dataset_symbol, label_symbols = label_symbols,  data_symbol = data_symbol, gene_symbol = gene_symbol, data_path=train_data_name, sample_fraction=1.0, return_label_ints = True)
-    
-    input_size = train_dataset.data.shape[-1]
+    train_adata = sc.read(os.path.join(train_data_name))
+
+    data_manager = DataLoaderManager(
+            domain_key=dataset_symbol,
+            class_key=label_symbols,
+            covariate_keys=None,
+            feature_list=None,
+            normalize_total=False,
+            log1p=False,
+            batch_size=batch_size,
+            train_frac=sample_fraction,
+            use_sampler=True,
+            sampler_emb=None,
+            sampler_knn=None,
+            sampler_domain_minibatch_strategy='proportional',
+            domain_coverage=None,
+            dist_metric='euclidean',
+            p_intra_knn=0.0,
+            p_intra_domain=0.0,
+            use_faiss=True,
+            use_ivf=True,
+            ivf_nprobe=10,
+            preload_dense=False,
+            device=torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    )
+
+    train_dataloader, val_dataloader, data_structure, info = data_manager.anndata_to_dataloader(train_adata, dataset_symbol,gene_names)
+    batches_out,data_out,input_size, num_batches, number_marker_genes = info
+
     model = Encoder(input_size, latent_dim=latent_dim).to(device).float()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
-    dataloader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True
-    )
-    val_dataloader = torch.utils.data.DataLoader(
-         val_dataset, batch_size=batch_size, shuffle=False
-    )
 
     #-----------------------------------------------------------------------------
 
     # Training loop
     for epoch in range(num_epochs):
-        for batch_idx, batch_data in enumerate(dataloader):
+        for batch_idx, batch_data in enumerate(train_dataloader):
             data, labels, _, _ = batch_data
             data = data.to(device).float()
             optimizer.zero_grad()
@@ -56,7 +100,7 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,  data_symbo
 
         if (epoch + 1) % print_every == 0:
             print(
-                f"Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx+1}/{len(dataloader)}], Loss: {loss.item():.4f}"
+                f"Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx+1}/{len(train_dataloader)}], Loss: {loss.item():.4f}"
             )
 
         if (epoch + 1) % eval_every == 0:
@@ -78,7 +122,14 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,  data_symbo
 
     
     
-    np.savez(embedding_save, embeddings = embeddings, labels = labels_train)
+    np.savez(embedding_save, embedding = embeddings, labels = labels_train)
+
+    if plot_name != None:
+        tsne = TSNE(n_components=2, random_state=0)
+        tsne_projection = tsne.fit_transform(np.array(embeddings))
+        plot_tsne(tsne_projection, labels_train, plot_name)
+
+
 
 def nt_xent_loss(z, labels, temperature=0.5):
     """
@@ -124,9 +175,9 @@ if __name__ == "__main__":
     cmdline_parser = argparse.ArgumentParser('run contrastive learning')
 
 
-    cmdline_parser.add_argument('-d', '--train_data_name',
+    cmdline_parser.add_argument('-d', '--data_path',
                                 help='dataset',
-                                default = '/media/sven/Intenso/projects/backup/test_query.npz',
+                                default = 'input.h5ad',
                                 type=str)
     cmdline_parser.add_argument('-e', '--embedding_save',
                                 help='embedding_save',
@@ -136,7 +187,7 @@ if __name__ == "__main__":
                                 help='dataset',
                                 default = 'batch',
                                 type=str)
-    cmdline_parser.add_argument('-l', '--label_symbols',
+    cmdline_parser.add_argument('-l', '--label_symbol',
                                 help='symbol',
                                 default = 'cell_subtype',
                                 type=str)
@@ -148,10 +199,36 @@ if __name__ == "__main__":
                                 help='gene_names',
                                 default = 'gene_names',
                                 type=str)
-                                
+    cmdline_parser.add_argument('-z', '--latent_dim',
+                                help='latent dim of contrastive model',
+                                default = 1024,
+                                type=int)
+    cmdline_parser.add_argument('-b', '--batch_size',
+                                help='batch size',
+                                default = 32,
+                                type=int)
+    cmdline_parser.add_argument('-n', '--epochs',
+                                help='epochs to train',
+                                default = 100,
+                                type=int)
+    cmdline_parser.add_argument('-t', '--temperature',
+                                help='model temp',
+                                default = 0.5,
+                                type=float)
+    cmdline_parser.add_argument('-c', '--contrastive_model',
+                                help='contrastive_model',
+                                default = "contrastive_model.pkl",
+                                type=str)
+    cmdline_parser.add_argument('-p', '--plot_name',
+                                help='plot name',
+                                default = None,
+                                type=str)
+
     args, unknowns = cmdline_parser.parse_known_args()
 
-    gene_names = ["PTPRC", "CD2", "CD3D","CD3G","CD3E", "CD8A","CD8B", "CD4", "MZB1", "CD19", "MS4A1", "CD14", "FCGR3A", "FCGR1A", "ITGAM", "CD68", "SPP1", "IL3RA",  "C1QA", "TYROBP", "FCER1G", "CPA3",  "TPSAB1", "MS4A2", "KIT", "ACTA2", "THY1", "CRABP1", "VWF", "ENG", "CDH5", "VCAM1", "KRT19", "KRT8", "EPCAM", "ALB", "TF", "TTR", "MLANA", "TYRP1", "MITF", "PMEL", "FDCSP", "SPIB", "ASCL1", "CALCA", "CHGA", "CHGB", "TFF3","GRP", "CEACAM5", "CEACAM6", "SCGB2A2","ENO2","SSTR2"]
-    
-
-    main(train_data_name = args.train_data_name, gene_names = gene_names, dataset_symbol = args.dataset_symbol, label_symbols = args.label_symbols,  data_symbol = args.data_symbol, gene_symbol = args.gene_symbol, embedding_save = args.embedding_save, latent_dim = 1024, learning_rate = 0.0001, batch_size = 32, num_epochs = 100, eval_every = 1, print_every = 500, temperature = 0.5)
+    main(train_data_name=args.data_path, gene_names=[],
+            dataset_symbol=args.dataset_symbol, label_symbols=args.label_symbol,
+            embedding_save=args.embedding_save, latent_dim=args.latent_dim, learning_rate=0.0001,
+            batch_size=args.batch_size, num_epochs=args.epochs,
+            eval_every=1, print_every=1,
+            temperature=args.temperature, contrastive_model = args.contrastive_model, plot_name = args.plot_name)

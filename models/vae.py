@@ -636,21 +636,21 @@ class HVAE_Lightning(pl.LightningModule):
 
     def _current_kl_weight(self):
         """
-        Linear warm-up from kl_weight_start 
+        Linear warm-up from kl_weight_start
         """
         e = max(0, int(self.current_epoch))
         if self.kl_anneal_warmup_epochs <= 0:
             return self.kl_anneal_max
         t = min(1.0, e / float(self.kl_anneal_warmup_epochs))
         return (1.0 - t) * self.kl_weight_start + t * self.kl_anneal_max
-    
+
 
     def get_dataset_baseline(self, counts, batch_data, n_batch):
 
         lib_b = torch.empty(n_batch)
         for b in range(n_batch):
-            s = torch.tensor(counts[np.array(batch_data) == b].sum(1)).clamp_min(1.) 
-            lib_b[b] = torch.log(s).mean()        
+            s = torch.tensor(counts[np.array(batch_data) == b].sum(1)).clamp_min(1.)
+            lib_b[b] = torch.log(s).mean()
         self.register_buffer("loglib_baseline_per_batch", lib_b)     # shape [n_batch]
 
         return
@@ -675,7 +675,7 @@ class HVAE_Lightning(pl.LightningModule):
             std = torch.sqrt(l_var + 1e-8)
             library = l_mu[torch.arange(len(batch_labels)), batch_labels] + \
                       std[torch.arange(len(batch_labels)), batch_labels] * torch.randn_like(l_var[:, 0])
-            
+
             std = torch.sqrt(l_var + 1e-8)                           # [B,K]
             lib_sample = l_mu[torch.arange(len(batch_labels)), batch_labels] + \
                       std[torch.arange(len(batch_labels)), batch_labels] * torch.randn_like(l_var[:, 0])
@@ -716,6 +716,7 @@ class HVAE_Lightning(pl.LightningModule):
         px_dropout_dec = output["px_dropout_dec"]
         gene_pred = output["gene_pred"]
         logits_q_c = output["logits_q_c"]
+        gene = torch.tensor(gene)
 
 
         p_mu_l, p_sigma_l, p_pi_l = self.gmm_prior()
@@ -724,7 +725,7 @@ class HVAE_Lightning(pl.LightningModule):
         p_mu_z, p_logvar_z, p_pi_z = self.gmm_prior_z()
         kl_z_total, pieces = gmvae_kl_with_mmd(
             z_mu=z_mu,
-            z_logvar=torch.log(z_var + eps), 
+            z_logvar=torch.log(z_var + eps),
             logits_q_c=logits_q_c,
             p_mu=p_mu_z,
             p_logvar=p_logvar_z,
@@ -738,13 +739,13 @@ class HVAE_Lightning(pl.LightningModule):
 
         B, G = x.shape
         if self.dispersion == "gene":
-            r_gene = F.softplus(self.r_gene_unconstrained)           
-            px_r = r_gene.unsqueeze(0).expand(B, G)                  
+            r_gene = F.softplus(self.r_gene_unconstrained)
+            px_r = r_gene.unsqueeze(0).expand(B, G)
             if self.pi_gene_logit is not None:
-                pi_gene = torch.sigmoid(self.pi_gene_logit)          
+                pi_gene = torch.sigmoid(self.pi_gene_logit)
                 px_dropout = pi_gene.unsqueeze(0).expand(B, G)
             else:
-                px_dropout = px_dropout_dec                         
+                px_dropout = px_dropout_dec
         else:
             px_r = output["px_r_dec"]
             px_dropout = px_dropout_dec
@@ -770,7 +771,7 @@ class HVAE_Lightning(pl.LightningModule):
         ce_loss_val = ce_loss(torch.clip(gene_pred.float(), max=2), gene.float())
         kl_w = self._current_kl_weight()
         loss = (recon + kl_w * (kl_z_total + kl_l)) * 0.1 + self.gene_factor * ce_loss_val
-        
+
         """
         with torch.no_grad():
             print("x_counts stats  min/max/mean:", x.min().item(), x.max().item(), x.float().mean().item())
@@ -815,4 +816,4 @@ class HVAE_Lightning(pl.LightningModule):
             "gradient_clip_val": 1.0,
             "lr_scheduler": {"scheduler": scheduler}
         }
-    
+

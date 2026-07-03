@@ -2,7 +2,6 @@ import os
 import json
 import torch
 import numpy as np
-import matplotlib.pyplot as plt
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import f1_score
@@ -15,6 +14,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data import TensorDataset
 from sklearn.model_selection import train_test_split
 import argparse
+from train_simclr import main as main_simclr
         
 
 def load_embedding_data(data_path):
@@ -96,8 +96,6 @@ def train_classifier(data_path, classification_output, model_path):
             for data, label in val_dataloader:
 
                 data = data.to(device).float()
-
-
 
                 val_outputs = classifier_model(data)
                 val_loss += criterion(val_outputs, label)
@@ -250,15 +248,22 @@ def evaluate_kmeans(data):
 
 
 
-
 if __name__ == "__main__":
 
     cmdline_parser = argparse.ArgumentParser('clean up data')
 
 
-    cmdline_parser.add_argument('-d', '--data',
-                                help='data',
-                                default = 'embedding.npz',
+    cmdline_parser.add_argument('-d', '--data_path',
+                                help='input train data',
+                                default = 'input.h5ad',
+                                type=str)
+    cmdline_parser.add_argument('-a', '--dataset_symbol',
+                                help='dataset field',
+                                default = 'Batch',
+                                type=str)
+    cmdline_parser.add_argument('-s', '--label_symbol',
+                                help='field for labels used for contrastive learning',
+                                default = 'cell_type',
                                 type=str)
     cmdline_parser.add_argument('-r', '--run_type',
                                 help='nn/kmeans/predict',
@@ -272,10 +277,48 @@ if __name__ == "__main__":
                                 help='output evaluation',
                                 default = 'output.csv',
                                 type=str)
+    cmdline_parser.add_argument('-e', '--embedding_save',
+                                help='to save final embedding',
+                                default = 'embedding_save.npz',
+                                type=str)
+    cmdline_parser.add_argument('-l', '--latent_dim',
+                                help='latent dim of contrastive model',
+                                default = 1024,
+                                type=int)
+    cmdline_parser.add_argument('-b', '--batch_size',
+                                help='batch size',
+                                default = 32,
+                                type=int)
+    cmdline_parser.add_argument('-n', '--epochs',
+                                help='epochs to train',
+                                default = 100,
+                                type=int)
+    cmdline_parser.add_argument('-t', '--temperature',
+                                help='model temp',
+                                default = 0.5,
+                                type=float)
+    cmdline_parser.add_argument('-c', '--contrastive_model',
+                                help='contrastive_model',
+                                default = "contrastive_model.pkl",
+                                type=str)
 
-                                
     args, unknowns = cmdline_parser.parse_known_args()
-    
-    if args.run_type == "nn": train_classifier(args.data, args.evaluation, args.model_path)
-    elif args.run_type == "predict": predict_classifier(args.data, args.model_path, args.evaluation)
-    elif args.run_type == "kmeans": evaluate_kmeans(args.data)
+
+    #### create embedding using contrastive learning
+
+    if args.run_type == "predict": predict_classifier(args.embedding_save, args.model_path, args.evaluation)
+    else:
+
+        main_simclr(train_data_name = args.data_path, gene_names = [],
+                dataset_symbol = args.dataset_symbol, label_symbols = args.label_symbol,
+                embedding_save = args.embedding_save, latent_dim = args.latent_dim, learning_rate = 0.0001,
+                batch_size = args.batch_size, num_epochs = args.epochs,
+                eval_every = 1, print_every = 1,
+                temperature = args.temperature, contrastive_model = args.contrastive_model)
+
+
+        #### train classifier
+
+        if args.run_type == "nn": train_classifier(args.embedding_save, args.evaluation, args.model_path)
+        elif args.run_type == "kmeans": evaluate_kmeans(args.embedding_save)
+

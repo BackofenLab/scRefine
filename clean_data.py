@@ -89,6 +89,7 @@ def clean_up(data, filtered_data_output, conf_data, plots, labels = None, cluste
     filtered_data_added = []
     filtered_conf_added = []
     filtered_labels_list = []
+    filtered_data_tsne = []
         
 
     for cluster_id in np.unique(labels):
@@ -98,7 +99,10 @@ def clean_up(data, filtered_data_output, conf_data, plots, labels = None, cluste
         data_x_selected = np.array(embeddings)[np.array(labels) == cluster_id]
         data_x_selected_emb = np.array(data_x_tsne)[np.array(labels) == cluster_id]
         selected_conf_knn = np.array(conf_knn)[np.array(labels) == cluster_id]
+        selected_tsne = np.array(train_embeddings)[np.array(labels) == cluster_id]
         labels_selected = np.array(labels)[np.array(labels) == cluster_id]
+
+        
             
         q1 = max(min(np.quantile(selected_conf_knn, quantil), quantil_max), cluster_min)
             
@@ -107,15 +111,17 @@ def clean_up(data, filtered_data_output, conf_data, plots, labels = None, cluste
         filtered_data = np.array(data_x_selected_emb)[mask]
         filtered_conf = np.array(selected_conf_knn)[mask]
         filtered_labels = np.array(labels_selected)[mask]
-            
+        filtered_tsne = np.array(selected_tsne)[mask]
+
+        filtered_data_tsne.extend(filtered_tsne)
         filtered_data_added.extend(filtered_data)
         filtered_conf_added.extend(filtered_conf)
         filtered_labels_list.extend(filtered_labels)
             
-    np.savez(filtered_data_output, data = filtered_data_added, labels = filtered_labels_list, confidence = filtered_conf_added)
+    np.savez(filtered_data_output, data = filtered_data_added, labels = filtered_labels_list, confidence = filtered_conf_added, tsne = filtered_data_tsne)
     
-    plot_tsne(filtered_data_output, filtered_conf_added, plots + "_clean.html")
-    plot_tsne(filtered_data_output, filtered_labels_list, plots + "_clean_labels.html")
+    plot_tsne(filtered_data_tsne, filtered_conf_added, plots + "_clean.html")
+    plot_tsne(filtered_data_tsne, filtered_labels_list, plots + "_clean_labels.html")
     
     return
 
