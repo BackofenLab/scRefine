@@ -76,12 +76,7 @@ class AnnDataCollator:
                     self.prediction_genes = self.prediction_genes + 1
                 except:
                     print("skipped: " + str(gene_sym))
-        
-            counts = np.zeros((self.prediction_genes, 10), dtype=np.int64)
-            for bin_num, bin_data in enumerate(bin_indices):
-                for data in bin_data:
-                    counts[bin_num, int(data*10)] += 1
-                
+
             self.bin_indices = np.concat(bin_indices, axis = -1)
 
     def __call__(self, batch_indices):

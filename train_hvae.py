@@ -31,15 +31,13 @@ def save_validate(dataloader, model, save_embedding):
             data = data.to(device).float()
 
             batched_data_list.extend(np.array(batched_data))
-            label_data_list.extend(np.array(label_data))
             batched_data = batched_data.to(device)
             output = model(data, gene, batched_data)
             data_list.extend(data.to("cpu"))
             mu = output["z_mu"]
             mu_list.extend(mu.detach().cpu().numpy())
         
-    np.savez(save_embedding, embedding = mu_list, batches = np.array(batched_data_list),
-             labels = np.array(label_data_list))
+    np.savez(save_embedding, embedding = mu_list, batches = np.array(batched_data_list))
 
     return 
 
