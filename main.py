@@ -101,19 +101,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--data_symbol",
         type=str,
         default="data",
-        help="data field",
+        help="key in adata.layers for the expression matrix to train on; falls back to adata.X if absent",
     )
     training_args.add_argument(
         "--gene_symbol",
         type=str,
         default="gene_names",
         help="gene names",
-    )
-    training_args.add_argument(
-        "--count_symbol",
-        type=str,
-        default=None,
-        help="normalized data",
     )
     training_args.add_argument(
         "--output",
@@ -356,7 +350,6 @@ def run_training(args: argparse.Namespace) -> None:
         kl_anneal_warmup_epochs=args.kl_anneal_warmup_epochs,
         kl_anneal_max=args.kl_anneal_max,
         model_checkpoint=args.model,
-        count_symbol=args.count_symbol,
         random_assignment=args.random_assignment,
     )
 

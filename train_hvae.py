@@ -54,7 +54,7 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
             mmd_weight = 0.5, reconstruction_weight = 1.0, 
             kl_anneal_warmup_epochs = 20, kl_anneal_max = 0.5, 
              save_embedding = "embedding.npz",
-             model_checkpoint = "model.ckpt", count_symbol = None, random_assignment = False):
+             model_checkpoint = "model.ckpt", random_assignment = False):
     """
     Trains an `HVAE_Lightning` model on single-cell data: builds domain-aware DataLoaders,
     fits the model with early stopping on training loss, saves the model checkpoint, and
@@ -65,7 +65,9 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
         gene_names (list): Marker gene symbols used for the auxiliary gene-prediction head.
         dataset_symbol (str): Column in `adata.obs` used as the domain/batch key.
         label_symbols (str): Unused by this function directly; kept for CLI/pipeline parity.
-        data_symbol (str): Unused by this function directly; kept for CLI/pipeline parity.
+        data_symbol (str): Key in `adata.layers` for the expression matrix to train on. If
+            the key is present in `train_adata.layers`, it replaces `adata.X` before data
+            loading; otherwise `adata.X` is used unchanged.
         gene_symbol (str): Unused by this function directly; kept for CLI/pipeline parity.
         val_data_path (str, optional): Unused by this function; reserved for future support
             of a separate validation dataset.
@@ -90,8 +92,6 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
         kl_anneal_max (float, optional): KL weight after annealing completes.
         save_embedding (str, optional): Output `.npz` path for the validation embeddings.
         model_checkpoint (str, optional): Output path for the Lightning model checkpoint.
-        count_symbol (str, optional): Unused by this function; reserved for a normalized
-            count layer/column selector.
         random_assignment (bool, optional): Whether the model samples a random GMM component
             for the library size instead of using the observed batch label.
 
@@ -100,6 +100,9 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
     """
     device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
     train_adata = sc.read(os.path.join(train_data_name))
+
+    if data_symbol is not None and data_symbol in train_adata.layers:
+        train_adata.X = train_adata.layers[data_symbol]
 
     data_manager = DataLoaderManager(
             domain_key=dataset_symbol,
