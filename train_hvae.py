@@ -130,11 +130,11 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
 
 
 
-    train_dataloader, val_dataloader, data_structure, info = data_manager.anndata_to_dataloader(train_adata, dataset_symbol,gene_names)
+    train_dataloader, pred_dataloader, data_structure, info = data_manager.anndata_to_dataloader(train_adata, dataset_symbol,gene_names)
     batches_out,data_out,size_, num_batches, number_marker_genes = info
 
     print(train_dataloader)
-    print(val_dataloader)
+    print(pred_dataloader)
 
     model = HVAE_Lightning(n_input=size_, n_latent=latent_dim,n_hidden = hidden_dim, n_layers=layers,
                             encode_covariates=encode_covariates, ln = ln, num_components = num_batches, 
@@ -158,8 +158,8 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
     callbacks=[early_stop_callback],
     precision = 64,
     )
-    trainer.fit(model, train_dataloader, val_dataloader)
+    trainer.fit(model, train_dataloader, pred_dataloader)
     trainer.save_checkpoint(model_checkpoint)
     
     model.to("cpu")
-    save_validate(val_dataloader, model, save_embedding)
+    save_validate(pred_dataloader, model, save_embedding)
