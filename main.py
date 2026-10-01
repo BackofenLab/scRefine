@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     training, cleanup, and additional-load-fields argument groups.
     """
     parser = argparse.ArgumentParser(
-        description="Handles data preprocessing, training and cleanup."
+        description="Handles data preprocessing, HVAE training and cleanup."
     )
 
     preprocessing_args = parser.add_argument_group("preprocessing")
@@ -101,13 +101,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--data_symbol",
         type=str,
         default="data",
-        help="key in adata.layers for the expression matrix to train on; falls back to adata.X if absent",
+        help="data field",
     )
     training_args.add_argument(
         "--gene_symbol",
         type=str,
         default="gene_names",
         help="gene names",
+    )
+    training_args.add_argument(
+        "--count_symbol",
+        type=str,
+        default=None,
+        help="normalized data",
     )
     training_args.add_argument(
         "--output",
@@ -168,6 +174,30 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=50,
         help="weight for marker genes",
+    )
+    training_args.add_argument(
+        "--use_gene_contrastive",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="use NT-Xent contrastive learning directly on log-normalized marker-gene expression, instead of the MSE-based classifier head over binned expression",
+    )
+    training_args.add_argument(
+        "--gene_contrastive_temperature",
+        type=float,
+        default=0.5,
+        help="NT-Xent temperature, only used with --use_gene_contrastive",
+    )
+    training_args.add_argument(
+        "--gene_contrastive_bandwidth",
+        type=float,
+        default=None,
+        help="kernel bandwidth for expression-similarity weighting, only used with --use_gene_contrastive (default: per-gene batch std)",
+    )
+    training_args.add_argument(
+        "--gene_contrastive_cross_batch_only",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="only used with --use_gene_contrastive; if set (default), the contrastive loss only compares cross-batch pairs (batch-integration signal); pass --no-gene_contrastive_cross_batch_only to compare all pairs by marker-gene similarity regardless of batch, favoring cell-type structure over batch alignment",
     )
     training_args.add_argument(
         "--encode_covariates",
@@ -272,6 +302,15 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=False,
     )
+    cleanup_args.add_argument(
+        "--no_plots",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="skip writing the TSNE scatter-plot HTML files during cleanup (the TSNE "
+             "projection itself is still computed, since the confidence model is fit on "
+             "it; this only skips the plot_tsne HTML writes, which dominate cleanup "
+             "runtime for large datasets)",
+    )
 
     additional_fields_args = parser.add_argument_group("additional load fields")
     additional_fields_args.add_argument(
@@ -287,6 +326,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=[],
         help="list of layer fields",
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="random seed for Python/NumPy/PyTorch (enables multi-seed runs)",
     )
 
     return parser
@@ -310,11 +356,11 @@ def run_preprocessing(args: argparse.Namespace) -> None:
 
 def run_training(args: argparse.Namespace) -> None:
     """
-    Trains the HVAE model on the appropriate preprocessing output: the raw dataset when
-    `no_hvg` and not `split_data`, the full HVG output when only `no_hvg` is False, or the
-    reference split when `split_data` is True.
+    Trains the HVAE (`models/vae.py`) on the appropriate preprocessing output: the raw
+    dataset when `no_hvg` and not `split_data`, the full HVG output when only `no_hvg` is
+    False, or the reference split when `split_data` is True.
     """
-    print_banner("training")
+    print_banner("training (HVAE)")
 
     gene_names = load_marker_genes(args.marker_genes)
 
@@ -350,7 +396,12 @@ def run_training(args: argparse.Namespace) -> None:
         kl_anneal_warmup_epochs=args.kl_anneal_warmup_epochs,
         kl_anneal_max=args.kl_anneal_max,
         model_checkpoint=args.model,
+        count_symbol=args.count_symbol,
         random_assignment=args.random_assignment,
+        use_gene_contrastive=args.use_gene_contrastive,
+        gene_contrastive_temperature=args.gene_contrastive_temperature,
+        gene_contrastive_bandwidth=args.gene_contrastive_bandwidth,
+        gene_contrastive_cross_batch_only=args.gene_contrastive_cross_batch_only,
     )
 
 def run_cleanup(args: argparse.Namespace) -> None:
@@ -367,14 +418,15 @@ def run_cleanup(args: argparse.Namespace) -> None:
             cluster_min=args.cluster_min,
             quantil=args.quantil,
             quantil_max=args.quantil_max,
+            make_plots=not args.no_plots,
         )
 
 
 def main() -> None:
-    """Entry point: parses CLI args and runs preprocessing, training, then cleanup in order."""
+    """Entry point: parses CLI args and runs preprocessing, HVAE training, then cleanup in order."""
     parser = build_parser()
     args = parser.parse_args()
-    set_seed()
+    set_seed(args.seed)
     run_preprocessing(args)
     run_training(args)
     run_cleanup(args)

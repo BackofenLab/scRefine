@@ -98,6 +98,124 @@ def embedding_distance_loss(embeddings, indices, decay_factor=0.1):
 
     return (mean_dist_01 + mean_dist_10) / 2
 
+
+def _nt_xent_by_labels(z, labels, temperature=0.5):
+    """
+    NT-Xent (SimCLR-style) contrastive loss treating same-label samples within the batch
+    as positive pairs; adapted from `train_simclr.py::nt_xent_loss` so it can be reused for
+    arbitrary integer group ids (not just class labels).
+
+    Args:
+        z (Tensor): Embeddings, shape (batch, dim).
+        labels (Tensor): Integer group id per sample, shape (batch,).
+        temperature (float, optional): Softmax temperature.
+
+    Returns:
+        Tensor: Scalar loss.
+    """
+    batch_size = z.shape[0]
+
+    z = F.normalize(z, dim=1)
+    similarity_matrix = torch.matmul(z, z.T) / temperature
+
+    positive_mask = (labels.unsqueeze(1) == labels.unsqueeze(0)).float()
+    self_mask = torch.eye(batch_size, dtype=torch.bool, device=z.device)
+
+    logits_max, _ = torch.max(similarity_matrix, dim=1, keepdim=True)
+    logits = similarity_matrix - logits_max.detach()
+
+    exp_logits = torch.exp(logits) * (~self_mask)
+    log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True) + 1e-10)
+
+    positive_log_prob = (positive_mask * log_prob).sum(dim=1) / (positive_mask.sum(dim=1) + 1e-10)
+
+    return -positive_log_prob.mean()
+
+
+def _nt_xent_weighted(z, values, batch_labels=None, temperature=0.5, bandwidth=None):
+    """
+    NT-Xent contrastive loss where "positive-ness" between a pair of samples is a
+    continuous weight (a Gaussian kernel over `values`) rather than a binary same-label
+    mask — used for contrastive learning directly on a continuous target (e.g. raw
+    log-normalized marker-gene expression) instead of a discretized bin/label.
+
+    Args:
+        z (Tensor): Embeddings, shape (batch, dim).
+        values (Tensor): Continuous per-sample value used to weight positive pairs, shape
+            (batch,).
+        batch_labels (Tensor, optional): Integer batch/domain id per sample, shape
+            (batch,). When given, pairs from the same batch are excluded from both the
+            softmax denominator and the positive weighting — only cross-batch pairs are
+            compared, so a positive/negative pair is only ever "same expression, different
+            batch" or "different expression, different batch", which is the signal that
+            actually reflects batch-integration rather than within-batch similarity.
+            When `None`, only the self-pair (diagonal) is excluded.
+        temperature (float, optional): Softmax temperature for the embedding similarities.
+        bandwidth (float, optional): Kernel bandwidth for the value-similarity weight.
+            Defaults to `values.std()` (clamped away from 0) so the weighting adapts to the
+            scale of each batch/gene.
+
+    Returns:
+        Tensor: Scalar loss.
+    """
+    batch_size = z.shape[0]
+
+    z = F.normalize(z, dim=1)
+    similarity_matrix = torch.matmul(z, z.T) / temperature
+
+    bw = bandwidth if bandwidth is not None else values.std().clamp_min(1e-4)
+    diff = (values.unsqueeze(1) - values.unsqueeze(0)).abs()
+    weight = torch.exp(-diff / bw)
+
+    if batch_labels is not None:
+        valid_mask = batch_labels.unsqueeze(1) != batch_labels.unsqueeze(0)
+    else:
+        valid_mask = ~torch.eye(batch_size, dtype=torch.bool, device=z.device)
+
+    weight = weight * valid_mask
+
+    logits_max, _ = torch.max(similarity_matrix, dim=1, keepdim=True)
+    logits = similarity_matrix - logits_max.detach()
+
+    exp_logits = torch.exp(logits) * valid_mask
+    log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True) + 1e-10)
+
+    weighted_log_prob = (weight * log_prob).sum(dim=1) / (weight.sum(dim=1) + 1e-10)
+
+    return -weighted_log_prob.mean()
+
+
+def gene_expression_contrastive_loss(z_proj, gene_values, batch_labels=None, temperature=0.5, bandwidth=None):
+    """
+    Contrastive alternative to the MSE-based marker-gene prediction head, operating
+    directly on raw (log-normalized, unbinned) marker-gene expression: for each marker gene
+    independently, pairs of cells are weighted as positives in proportion to how close
+    their expression is (`_nt_xent_weighted`), and the per-gene losses are averaged.
+
+    Args:
+        z_proj (Tensor): Projected latent embeddings, shape (batch, dim).
+        gene_values (Tensor): Log-normalized marker-gene expression, shape (batch, n_genes),
+            as produced by the `AnnDataCollator` when `bin_marker_genes=False`.
+        batch_labels (Tensor, optional): Integer batch/domain id per sample, shape (batch,),
+            forwarded to `_nt_xent_weighted` so only cross-batch pairs are compared.
+        temperature (float, optional): NT-Xent softmax temperature.
+        bandwidth (float, optional): Kernel bandwidth passed to `_nt_xent_weighted`;
+            defaults to each gene's per-batch std.
+
+    Returns:
+        Tensor: Scalar loss, averaged over marker genes.
+    """
+    n_genes = gene_values.shape[1]
+    losses = [
+        _nt_xent_weighted(
+            z_proj, gene_values[:, g], batch_labels=batch_labels,
+            temperature=temperature, bandwidth=bandwidth,
+        )
+        for g in range(n_genes)
+    ]
+    return torch.stack(losses).mean()
+
+
 def kl_divergence_gmm(q_pi, q_mu, q_sigma, p_mu, p_sigma, p_pi):
     """
     KL divergence between a per-sample Gaussian-mixture posterior `q(z, c)` and a Gaussian-
@@ -137,7 +255,7 @@ def kl_divergence_gmm(q_pi, q_mu, q_sigma, p_mu, p_sigma, p_pi):
     return kl_z + kl_c  
     
 class FCLayers(nn.Module):
-    """A helper class to build fully-connected layers for a neural network.
+    """A helper class to build fully-connected layers for a neural network based on scVI github repository.
 
     Parameters
     ----------
@@ -442,7 +560,13 @@ class EncoderHVAE2(nn.Module):
         return torch.nn.functional.softmax(q_pi), q_m, q_v
 
 class LearnableGMMPrior(nn.Module):
-    """A learnable Gaussian-mixture prior over a low-dimensional (e.g. library-size) space."""
+    """A learnable Gaussian-mixture prior over a low-dimensional (e.g. library-size) space.
+
+    Each component's mean and log-std are a shared base plus a per-component (per-batch/
+    dataset) deviation from it, rather than fully independent per-component parameters —
+    see `models/vae.py::LearnableGMMPrior` for the independent-component version this is
+    a copy of.
+    """
 
     def __init__(self, latent_dim, num_components):
         """
@@ -454,14 +578,17 @@ class LearnableGMMPrior(nn.Module):
         self.num_components = num_components
         self.latent_dim = latent_dim
         self.pi_logits = nn.Parameter(torch.ones(num_components))
-        self.mu = nn.Parameter(torch.randn(num_components, latent_dim))
-        self.log_sigma = nn.Parameter(torch.zeros(num_components, latent_dim))
+        self.base_mu = nn.Parameter(torch.randn(1, latent_dim))
+        self.delta_mu = nn.Parameter(torch.randn(num_components, latent_dim) * 0.01)
+        self.base_log_sigma = nn.Parameter(torch.zeros(1, latent_dim))
+        self.delta_log_sigma = nn.Parameter(torch.zeros(num_components, latent_dim))
 
     def forward(self):
         """Returns: tuple: `(mu, sigma, pi)` — component means, std devs, and mixture weights."""
         pi = torch.softmax(self.pi_logits, dim=0)
-        sigma = torch.exp(self.log_sigma)
-        return self.mu, sigma, pi
+        mu = self.base_mu + self.delta_mu
+        sigma = torch.exp(self.base_log_sigma + self.delta_log_sigma)
+        return mu, sigma, pi
 
 
 class DecoderHVAE3(nn.Module):
@@ -518,7 +645,7 @@ class DecoderHVAE3(nn.Module):
         px = self.px_decoder(z, *cat_list)
         px_scale = self.px_scale_decoder(px)
         px_dropout = torch.nn.functional.relu(self.px_dropout_decoder(px))
-        px_rate = torch.nn.functional.relu(library * px_scale)
+        px_rate = torch.nn.functional.relu(torch.exp(library) * px_scale)
         px_r =  torch.nn.functional.softplus(self.px_r_decoder(px)) + 1e-4 if dispersion == "gene-cell" else None
 
 
@@ -639,7 +766,13 @@ def gmvae_kl_with_mmd(
 
 
 class LearnableGMMPriorZ(nn.Module):
-    """A learnable Gaussian-mixture prior over the main latent space `z` (log-var parameterized)."""
+    """A learnable Gaussian-mixture prior over the main latent space `z` (log-var parameterized).
+
+    Each component's mean and log-variance are a shared base plus a per-component (per-
+    batch/dataset) deviation from it, rather than fully independent per-component
+    parameters — see `models/vae.py::LearnableGMMPriorZ` for the independent-component
+    version this is a copy of.
+    """
 
     def __init__(self, z_dim, num_components):
         """
@@ -650,14 +783,16 @@ class LearnableGMMPriorZ(nn.Module):
         super().__init__()
         self.z_dim = z_dim
         self.K = num_components
-        self.mu = nn.Parameter(torch.randn(self.K, z_dim) * 0.01)
-        self.logvar = nn.Parameter(torch.zeros(self.K, z_dim))
+        self.base_mu = nn.Parameter(torch.randn(1, z_dim) * 0.01)
+        self.delta_mu = nn.Parameter(torch.randn(self.K, z_dim) * 0.01)
+        self.base_logvar = nn.Parameter(torch.zeros(1, z_dim))
+        self.delta_logvar = nn.Parameter(torch.zeros(self.K, z_dim))
         self.logits_pi = nn.Parameter(torch.zeros(self.K))
 
     def forward(self):
         """Returns: tuple: `(mu, logvar, pi)` — component means, log-variances, and mixture weights."""
-        p_mu = self.mu
-        p_logvar = self.logvar
+        p_mu = self.base_mu + self.delta_mu
+        p_logvar = self.base_logvar + self.delta_logvar
         p_pi = F.softmax(self.logits_pi, dim=0)
         return p_mu, p_logvar, p_pi
 
@@ -685,6 +820,10 @@ class HVAE_Lightning(pl.LightningModule):
         gene_dropout_shared=False,   # if True, gate is also per-gene (optional)
         kl_anneal_warmup_epochs=20,  # linear warm-up length
         kl_anneal_max=0.5,           # plateau value after warm-up
+        use_gene_contrastive=False,  # if True, replace the MSE marker-gene head with contrastive learning
+        gene_contrastive_temperature=0.5,
+        gene_contrastive_bandwidth=None,
+        gene_contrastive_cross_batch_only=True,
     ):
         """
         Args:
@@ -716,6 +855,25 @@ class HVAE_Lightning(pl.LightningModule):
             kl_anneal_warmup_epochs (int, optional): Epochs over which the KL weight is
                 linearly annealed from `kl_weight` to `kl_anneal_max`.
             kl_anneal_max (float, optional): KL weight after annealing completes.
+            use_gene_contrastive (bool, optional): If True, replace the MSE-based
+                marker-gene prediction head with an NT-Xent contrastive loss
+                (`gene_expression_contrastive_loss`) computed directly on raw (unbinned)
+                log-normalized marker-gene expression, using a learned projection head
+                instead of a regression head. Requires the `AnnDataCollator` to be built
+                with `bin_marker_genes=False` so `gene` targets are left unbinned. Only
+                cross-batch pairs are compared (same-batch pairs are excluded from both
+                positives and negatives), so the loss reflects batch-integration signal
+                rather than within-batch similarity.
+            gene_contrastive_temperature (float, optional): NT-Xent softmax temperature,
+                only used when `use_gene_contrastive=True`.
+            gene_contrastive_bandwidth (float, optional): Kernel bandwidth for the
+                expression-similarity weighting; only used when `use_gene_contrastive=True`.
+                Defaults to each gene's per-batch std (see `_nt_xent_weighted`).
+            gene_contrastive_cross_batch_only (bool, optional): Only used when
+                `use_gene_contrastive=True`. If True (default), the contrastive loss only
+                compares cross-batch pairs (batch-integration signal). If False, all pairs
+                are compared by marker-gene-expression similarity regardless of batch,
+                favoring cell-type structure over batch alignment.
         """
         super().__init__()
         self.save_hyperparameters()
@@ -742,7 +900,18 @@ class HVAE_Lightning(pl.LightningModule):
         self.gmm_prior_z = LearnableGMMPriorZ(n_latent, num_components).to(device)
         self.mmd_weight = mmd_weight
 
-        self.pred_genes = nn.Linear(n_latent, prediction_genes)
+        self.use_gene_contrastive = use_gene_contrastive
+        self.gene_contrastive_temperature = gene_contrastive_temperature
+        self.gene_contrastive_bandwidth = gene_contrastive_bandwidth
+        self.gene_contrastive_cross_batch_only = gene_contrastive_cross_batch_only
+
+        if self.use_gene_contrastive:
+            self.gene_contrastive_head = nn.Sequential(
+                nn.Linear(n_latent, n_latent), nn.ReLU(),
+                nn.Linear(n_latent, n_latent),
+            )
+        else:
+            self.pred_genes = nn.Linear(n_latent, prediction_genes)
 
         self.cov_embedding = nn.Embedding(n_batch, 20, padding_idx=0, max_norm=2)
         nn.init.normal_(self.cov_embedding.weight, mean=0.0, std=0.01)
@@ -784,20 +953,23 @@ class HVAE_Lightning(pl.LightningModule):
         return (1.0 - t) * self.kl_weight_start + t * self.kl_anneal_max
 
 
-    def get_dataset_baseline(self, counts, batch_data, n_batch):
+    def get_dataset_baseline(self, lib_sizes, batch_data, n_batch):
         """
         Computes and registers the per-batch mean log library size as a buffer
         (`loglib_baseline_per_batch`), used as an offset for the sampled library size
         in `forward`.
 
         Args:
-            counts (array-like): Raw per-cell count matrix, shape (n_cells, n_genes).
+            lib_sizes (array-like): Per-cell library size (total raw counts), shape
+                (n_cells,).
             batch_data (array-like): Integer batch id per cell, shape (n_cells,).
             n_batch (int): Total number of batches.
         """
+        lib_sizes = np.asarray(lib_sizes)
+        batch_data = np.asarray(batch_data)
         lib_b = torch.empty(n_batch)
         for b in range(n_batch):
-            s = torch.tensor(counts[np.array(batch_data) == b].sum(1)).clamp_min(1.)
+            s = torch.tensor(lib_sizes[batch_data == b]).clamp_min(1.)
             lib_b[b] = torch.log(s).mean()
         self.register_buffer("loglib_baseline_per_batch", lib_b)     # shape [n_batch]
 
@@ -820,7 +992,8 @@ class HVAE_Lightning(pl.LightningModule):
             dict: Model outputs, including latent stats (`z_mu`, `z_var`, `z`), library-size
                 stats (`l_pi`, `l_mu`, `l_var`, `library`, `ql`), decoder outputs (`px_scale`,
                 `px_r_dec`, `px_rate`, `px_dropout_dec`), the component logits `logits_q_c`,
-                and the auxiliary `gene_pred`.
+                and the auxiliary `gene_pred` (marker-gene bin regression, or a projection
+                embedding for contrastive learning when `use_gene_contrastive=True`).
         """
         assert not torch.isinf(x).any(), "inf detected in input data!"
         assert not torch.isnan(x).any(), "NaN detected in input data!"
@@ -850,7 +1023,11 @@ class HVAE_Lightning(pl.LightningModule):
         px_scale, px_r_dec, px_rate, px_dropout_dec = self.decoder(self.dispersion, z, library.unsqueeze(dim=-1), covariates)
 
         logits_q_c = self.c_head(z_mu)
-        gene_pred = self.pred_genes(z_mu)
+        gene_pred = (
+            self.gene_contrastive_head(z_mu)
+            if self.use_gene_contrastive
+            else self.pred_genes(z_mu)
+        )
 
         return {
             "z_mu": z_mu,
@@ -869,16 +1046,22 @@ class HVAE_Lightning(pl.LightningModule):
         }
 
     # ---------- loss ----------
-    def compute_loss(self, x, output, gene):
+    def compute_loss(self, x, output, gene, batch_labels=None):
         """
         Computes the total training loss: a ZINB reconstruction term, an annealed KL term
         (latent `z` + library size, via `gmvae_kl_with_mmd`/`kl_divergence_gmm`), and an
-        auxiliary marker-gene MSE term.
+        auxiliary marker-gene term — an MSE regression loss against binned marker-gene
+        expression by default, or an NT-Xent contrastive loss directly on raw
+        log-normalized marker-gene expression when `self.use_gene_contrastive=True`.
 
         Args:
             x (Tensor): Input counts, shape (batch, n_input).
             output (dict): The dict returned by `forward`.
             gene (array-like): Marker-gene targets, shape (batch, prediction_genes).
+            batch_labels (Tensor, optional): Integer batch/domain id per sample, shape
+                (batch,). Only used when `self.use_gene_contrastive=True` and
+                `self.gene_contrastive_cross_batch_only=True`, to restrict the contrastive
+                loss to cross-batch pairs (see `gene_expression_contrastive_loss`).
 
         Returns:
             dict: `{"train_loss": ..., "recon": ..., "kl_z_total": ..., "kl_l": ...,
@@ -891,7 +1074,7 @@ class HVAE_Lightning(pl.LightningModule):
         px_dropout_dec = output["px_dropout_dec"]
         gene_pred = output["gene_pred"]
         logits_q_c = output["logits_q_c"]
-        gene = torch.tensor(gene)
+        gene = torch.as_tensor(gene, device=x.device)
 
 
         p_mu_l, p_sigma_l, p_pi_l = self.gmm_prior()
@@ -911,6 +1094,17 @@ class HVAE_Lightning(pl.LightningModule):
             sample_for_mmd=True
         )
 
+
+        if self.use_gene_contrastive:
+            gene_aux_loss = gene_expression_contrastive_loss(
+                gene_pred, gene.float(),
+                batch_labels=batch_labels if self.gene_contrastive_cross_batch_only else None,
+                temperature=self.gene_contrastive_temperature,
+                bandwidth=self.gene_contrastive_bandwidth,
+            )
+        else:
+            ce_loss = torch.nn.MSELoss()
+            gene_aux_loss = ce_loss(torch.clip(gene_pred.float(), max=2), gene.float())
 
         B, G = x.shape
         if self.dispersion == "gene":
@@ -941,16 +1135,14 @@ class HVAE_Lightning(pl.LightningModule):
 
         recon = zzn.mean() * self.reconstruction_weight
 
-        ce_loss = torch.nn.MSELoss()
-        ce_loss_val = ce_loss(torch.clip(gene_pred.float(), max=2), gene.float())
         kl_w = self._current_kl_weight()
-        loss = (recon + kl_w * (kl_z_total + kl_l)) * 0.1 + self.gene_factor * ce_loss_val
+        loss = (recon + kl_w * (kl_z_total + kl_l)) * 0.1 + self.gene_factor * gene_aux_loss
 
         logs = {
             "recon": recon.detach(),
             "kl_z_total": (kl_w * kl_z_total).detach(),
             "kl_l": (kl_w * kl_l).detach(),
-            "gene_aux": ce_loss_val.detach(),
+            "gene_aux": gene_aux_loss.detach(),
             "kl_weight_eff": torch.tensor(kl_w, device=x.device),
             "mmd": pieces["mmd"],
         }
@@ -973,7 +1165,7 @@ class HVAE_Lightning(pl.LightningModule):
         x, _, covariates, gene = batch if self.encode_covariates else (batch, None)
 
         output = self(x, gene, covariates)
-        loss_dict = self.compute_loss(x, output, gene)
+        loss_dict = self.compute_loss(x, output, gene, batch_labels=covariates)
 
         self.log("train_loss", loss_dict["train_loss"], prog_bar=True)
         self.log("train/recon", loss_dict["recon"], prog_bar=True)

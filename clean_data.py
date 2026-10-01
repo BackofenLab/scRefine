@@ -31,9 +31,6 @@ def train_knn(data_x, data_y, train_fraction=0.4, confidence_threshold=0.5, rand
             `confidences2` is the max predicted probability per sample.
     """
 
-    data_x_train, data_x_test, data_y_train, data_y_test = train_test_split(
-        data_x, data_y, train_size=train_fraction, stratify=data_y, random_state=random_state
-    )
 
     model = RadiusNeighborsClassifier(radius = 0.1)
     model.fit(data_x, data_y)
@@ -51,7 +48,7 @@ def train_knn(data_x, data_y, train_fraction=0.4, confidence_threshold=0.5, rand
 
     return indices_of_interest, model, data_x, data_y, confidences, confidences2, probs
     
-def clean_up(data, filtered_data_output, conf_data, plots, labels = None, cluster_min = 0.2, quantil = 0.2, quantil_max = 0.3):
+def clean_up(data, filtered_data_output, conf_data, plots, labels = None, cluster_min = 0.2, quantil = 0.2, quantil_max = 0.3, make_plots = True):
     """
     Filters low-confidence embeddings out of a saved embedding file, per cluster.
 
@@ -59,7 +56,8 @@ def clean_up(data, filtered_data_output, conf_data, plots, labels = None, cluste
     otherwise a saved label array), TSNE-projects them, fits a k-NN confidence model, and
     for each cluster keeps only samples whose confidence is above a per-cluster quantile
     threshold (clamped to `[cluster_min, quantil_max]`). Saves confidence and filtered
-    results to disk, and writes TSNE scatter plots at each stage.
+    results to disk, and (unless `make_plots=False`) writes TSNE scatter plots at each
+    stage.
 
     Args:
         data (str): Path to an `.npz` file containing an 'embedding' array (and optionally
@@ -72,6 +70,10 @@ def clean_up(data, filtered_data_output, conf_data, plots, labels = None, cluste
         cluster_min (float, optional): Minimum confidence threshold per cluster.
         quantil (float, optional): Quantile of per-cluster confidence used as the cutoff.
         quantil_max (float, optional): Maximum confidence threshold per cluster.
+        make_plots (bool, optional): Whether to write the TSNE scatter-plot HTML files.
+            The TSNE projection itself is always computed (the confidence model is fit on
+            it), this only skips the `plot_tsne` HTML writes, which dominate cleanup
+            runtime for large datasets. Defaults to True.
     """
     loaded = np.load(data)
     embeddings = loaded["embedding"]
@@ -97,9 +99,10 @@ def clean_up(data, filtered_data_output, conf_data, plots, labels = None, cluste
     inds_knn, model_knn, data_x_test, data_y_test, conf_knn, conf2_knn, probs = train_knn(train_embeddings, np.array(labels_int), train_fraction=0.4, confidence_threshold=0.2, random_state=42)
 
     np.savez(conf_data, embeddings = embeddings, labels = labels, confidence = conf_knn, tsne_emb = train_embeddings)
-    
-    plot_tsne(train_embeddings, labels, plots + "_labels.html")
-    plot_tsne(train_embeddings, conf_knn, plots + "_conf.html")
+
+    if make_plots:
+        plot_tsne(train_embeddings, labels, plots + "_labels.html")
+        plot_tsne(train_embeddings, conf_knn, plots + "_conf.html")
 
     data_x_tsne = train_embeddings
     filtered_data_added = []
@@ -135,10 +138,11 @@ def clean_up(data, filtered_data_output, conf_data, plots, labels = None, cluste
         filtered_labels_list.extend(filtered_labels)
             
     np.savez(filtered_data_output, data = filtered_data_added, labels = filtered_labels_list, confidence = filtered_conf_added, tsne = filtered_data_tsne)
-    
-    plot_tsne(filtered_data_tsne, filtered_conf_added, plots + "_clean.html")
-    plot_tsne(filtered_data_tsne, filtered_labels_list, plots + "_clean_labels.html")
-    
+
+    if make_plots:
+        plot_tsne(filtered_data_tsne, filtered_conf_added, plots + "_clean.html")
+        plot_tsne(filtered_data_tsne, filtered_labels_list, plots + "_clean_labels.html")
+
     return
 
 
