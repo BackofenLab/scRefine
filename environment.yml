@@ -1,0 +1,21 @@
+name: scRefine
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11.*
+  - numpy=2.4.*
+  - scipy=1.17.*
+  - pandas=2.3.*
+  - scikit-learn=1.9.*
+  - anndata=0.12.*
+  - scanpy=1.11.*
+  - h5py=3.16.*
+  - python-igraph=1.0.*
+  - leidenalg=0.12.*
+  - plotly=7.1.*
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu126
+      - torch==2.14.*
+      - pyro-ppl==1.9.*
+      - pytorch-lightning==2.6.*
