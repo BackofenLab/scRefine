@@ -12,126 +12,6 @@ from torch.optim import Adam
 _identity = lambda x: x
         
         
-class ZINB(nn.Module):
-    """Zero-inflated negative binomial negative log-likelihood loss."""
-
-    def __init__(self, eps=1e-8):
-        """Args: eps (float, optional): Numerical stability floor for clamps/logs."""
-        super().__init__()
-        self.eps = eps
-
-    def forward(self, x, mu, theta, pi):
-        """
-        Args:
-            x (Tensor): Observed counts.
-            mu (Tensor): Negative binomial mean.
-            theta (Tensor): Pre-softplus dispersion parameter.
-            pi (Tensor): Zero-inflation (dropout) probability.
-
-        Returns:
-            Tensor: Scalar mean negative log-likelihood over the batch.
-        """
-        eps = self.eps
-        softplus_theta = torch.nn.functional.softplus(theta)
-
-
-        mu = torch.clamp(mu, min=eps, max=1e6)
-        softplus_theta = torch.clamp(softplus_theta, min=eps, max=1e6)
-        pi = torch.clamp(pi, min=eps, max=1 - eps)
-
-        log_theta_eps = torch.log(softplus_theta + eps)
-        log_mu_eps = torch.log(mu + eps)
-
-        nb_case = (
-            torch.lgamma(softplus_theta + x)
-            - torch.lgamma(softplus_theta)
-            - torch.lgamma(x + 1)
-            + softplus_theta * (log_theta_eps + log_mu_eps - log_theta_eps)
-            + x * (log_mu_eps - log_theta_eps + log_mu_eps)
-        )
-        log_nb_prob = nb_case - (softplus_theta + x) * torch.log1p(mu / softplus_theta + eps)
-
-
-        log_nb_prob = torch.clamp(log_nb_prob, min=-50, max=50)
-
-        log_zero_prob = torch.log(pi + (1.0 - pi) * torch.exp(log_nb_prob) + eps)
-        log_nonzero_prob = torch.log(1.0 - pi + eps) + log_nb_prob
-        
-        result = torch.where(x < eps, log_zero_prob, log_nonzero_prob)
-
-
-        return -torch.clamp(result, min=-50, max=50).sum(dim=-1).mean()
-
-
-def embedding_distance_loss(embeddings, indices, decay_factor=0.1):
-    """
-    Distance-weighted loss between two groups of embeddings (selected by `indices` in
-    {0, 1}): the mean pairwise L2 distance between groups, weighted by
-    `exp(-decay_factor * distance)` (clipped to [0, 5]) so nearby cross-group pairs
-    contribute more.
-
-    Args:
-        embeddings (Tensor): Embeddings for all samples, shape (N, D).
-        indices (Tensor): Group assignment per sample; only values 0 and 1 are used.
-        decay_factor (float, optional): Controls how quickly the distance weight decays.
-
-    Returns:
-        Tensor: Scalar loss, the average of the two directional weighted mean distances.
-    """
-    group_0 = embeddings[indices == 0]
-    group_1 = embeddings[indices == 1]
-    
-    
-    dists_01 = torch.cdist(group_0, group_1, p=2)  
-    dists_10 = torch.cdist(group_1, group_0, p=2)  
-
-
-    weights_01 = torch.exp(-decay_factor * dists_01)
-    weights_10 = torch.exp(-decay_factor * dists_10)
-
-    weights_01 = torch.clip(weights_01 , 0, 5)
-    weights_10 = torch.clip(weights_10 , 0, 5)
-
-    mean_dist_01 = torch.sum(dists_01 * weights_01) / torch.sum(weights_01)
-    mean_dist_10 = torch.sum(dists_10 * weights_10) / torch.sum(weights_10)
-
-
-    return (mean_dist_01 + mean_dist_10) / 2
-
-
-def _nt_xent_by_labels(z, labels, temperature=0.5):
-    """
-    NT-Xent (SimCLR-style) contrastive loss treating same-label samples within the batch
-    as positive pairs; adapted from `train_simclr.py::nt_xent_loss` so it can be reused for
-    arbitrary integer group ids (not just class labels).
-
-    Args:
-        z (Tensor): Embeddings, shape (batch, dim).
-        labels (Tensor): Integer group id per sample, shape (batch,).
-        temperature (float, optional): Softmax temperature.
-
-    Returns:
-        Tensor: Scalar loss.
-    """
-    batch_size = z.shape[0]
-
-    z = F.normalize(z, dim=1)
-    similarity_matrix = torch.matmul(z, z.T) / temperature
-
-    positive_mask = (labels.unsqueeze(1) == labels.unsqueeze(0)).float()
-    self_mask = torch.eye(batch_size, dtype=torch.bool, device=z.device)
-
-    logits_max, _ = torch.max(similarity_matrix, dim=1, keepdim=True)
-    logits = similarity_matrix - logits_max.detach()
-
-    exp_logits = torch.exp(logits) * (~self_mask)
-    log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True) + 1e-10)
-
-    positive_log_prob = (positive_mask * log_prob).sum(dim=1) / (positive_mask.sum(dim=1) + 1e-10)
-
-    return -positive_log_prob.mean()
-
-
 def _nt_xent_weighted(z, values, batch_labels=None, temperature=0.5, bandwidth=None):
     """
     NT-Xent contrastive loss where "positive-ness" between a pair of samples is a
@@ -314,67 +194,44 @@ def kl_divergence_batch_component(q_mu, q_sigma, p_mu, p_sigma, batch_labels):
 
 
 class FCLayers(nn.Module):
-    """A helper class to build fully-connected layers for a neural network based on scVI github repository.
-
-    Parameters
-    ----------
-    n_in
-        The dimensionality of the input
-    n_out
-        The dimensionality of the output
-    n_cat_list
-        A list containing, for each category of interest,
-        the number of categories. Each category will be
-        included using a one-hot encoding.
-    n_cont
-        The dimensionality of the continuous covariates
-    n_layers
-        The number of fully-connected hidden layers
-    n_hidden
-        The number of nodes per hidden layer
-    dropout_rate
-        Dropout rate to apply to each of the hidden layers
-    use_batch_norm
-        Whether to have `BatchNorm` layers or not
-    use_layer_norm
-        Whether to have `LayerNorm` layers or not
-    use_activation
-        Whether to have layer activation or not
-    bias
-        Whether to learn bias in linear layers or not
-    inject_covariates
-        Whether to inject covariates in each layer, or just the first (default).
-    activation_fn
-        Which activation function to use
+    """
+    Stack of fully-connected layers (Linear -> optional BatchNorm/LayerNorm -> ReLU ->
+    optional Dropout), trimmed down from scVI's `FCLayers`. Optional continuous covariates
+    are concatenated to the input of the first layer, and of every layer when
+    `inject_covariates=True`.
     """
 
     def __init__(
         self,
         n_in: int,
         n_out: int,
-        n_cat_list = None,
         n_cont: int = 0,
         n_layers: int = 1,
         n_hidden: int = 128,
         dropout_rate: float = 0.1,
         use_batch_norm: bool = True,
         use_layer_norm: bool = False,
-        use_activation: bool = True,
-        bias: bool = True,
         inject_covariates: bool = True,
-        activation_fn: nn.Module = nn.ReLU,
     ):
+        """
+        Args:
+            n_in (int): Input dimensionality.
+            n_out (int): Output dimensionality.
+            n_cont (int, optional): Dimensionality of the continuous covariates passed to
+                `forward` as `cont`; 0 means no covariates.
+            n_layers (int, optional): Number of fully-connected layers.
+            n_hidden (int, optional): Width of the hidden layers.
+            dropout_rate (float, optional): Dropout after each layer (0 disables it).
+            use_batch_norm (bool, optional): Add a `BatchNorm1d` after each linear layer.
+            use_layer_norm (bool, optional): Add a (non-affine) `LayerNorm` after each
+                linear layer.
+            inject_covariates (bool, optional): Concatenate the covariates into every
+                layer's input (True), or only the first layer's (False).
+        """
         super().__init__()
         self.inject_covariates = inject_covariates
+        self.n_cov = n_cont
         layers_dim = [n_in] + (n_layers - 1) * [n_hidden] + [n_out]
-
-        if n_cat_list is not None:
-            # n_cat = 1 will be ignored
-            self.n_cat_list = [n_cat if n_cat > 1 else 0 for n_cat in n_cat_list]
-        else:
-            self.n_cat_list = []
-
-        self.n_cov = n_cont + sum(self.n_cat_list)
 
         self.fc_layers = nn.Sequential(
             collections.OrderedDict(
@@ -382,11 +239,7 @@ class FCLayers(nn.Module):
                     (
                         f"Layer {i}",
                         nn.Sequential(
-                            nn.Linear(
-                                n_in + self.n_cov * self.inject_into_layer(i),
-                                n_out,
-                                bias=bias,
-                            ),
+                            nn.Linear(n_in + self.n_cov * self.inject_into_layer(i), n_out),
                             # non-default params come from defaults in original Tensorflow
                             # implementation
                             nn.BatchNorm1d(n_out, momentum=0.01, eps=0.001)
@@ -395,7 +248,7 @@ class FCLayers(nn.Module):
                             nn.LayerNorm(n_out, elementwise_affine=False)
                             if use_layer_norm
                             else None,
-                            activation_fn() if use_activation else None,
+                            nn.ReLU(),
                             nn.Dropout(p=dropout_rate) if dropout_rate > 0 else None,
                         ),
                     )
@@ -408,82 +261,32 @@ class FCLayers(nn.Module):
 
     def inject_into_layer(self, layer_num) -> bool:
         """Returns whether covariates should be concatenated into hidden layer `layer_num`."""
-        user_cond = layer_num == 0 or (layer_num > 0 and self.inject_covariates)
-        return user_cond
+        return layer_num == 0 or self.inject_covariates
 
-
-    def forward(self, x: torch.Tensor, *cat_list: int, cont: torch.Tensor | None = None):
-        """Forward computation on ``x``.
-
-        Parameters
-        ----------
-        x
-            tensor of values with shape ``(n_in,)``
-        cat_list
-            list of category membership(s) for this sample
-        cont
-            tensor of continuous covariates with shape ``(n_cont,)``
-
-        Returns
-        -------
-        :class:`torch.Tensor`
-            tensor of shape ``(n_out,)``
+    def forward(self, x: torch.Tensor, cont: torch.Tensor | None = None):
         """
+        Args:
+            x (Tensor): Input, shape (batch, n_in).
+            cont (Tensor, optional): Continuous covariates, shape (batch, n_cont).
 
-        one_hot_cat_list = []  # for generality in this list many idxs useless.
-        cont_list = [cont] if cont is not None else []
-        cat_list = cat_list or []
-
-        if len(self.n_cat_list) > len(cat_list):
-            raise ValueError("nb. categorical args provided doesn't match init. params.")
-        for n_cat, cat in zip(self.n_cat_list, cat_list, strict=False):
-            if n_cat and cat is None:
-                raise ValueError("cat not provided while n_cat != 0 in init. params.")
-            if n_cat > 1:  # n_cat = 1 will be ignored - no additional information
-                if cat.size(1) != n_cat:
-                    one_hot_cat = nn.functional.one_hot(cat.squeeze(-1), n_cat)
-                else:
-                    one_hot_cat = cat  # cat has already been one_hot encoded
-                one_hot_cat_list += [one_hot_cat]
-        cov_list = cont_list + one_hot_cat_list
+        Returns:
+            Tensor: Output, shape (batch, n_out).
+        """
         for i, layers in enumerate(self.fc_layers):
             for layer in layers:
-                if layer is not None:
-                    if isinstance(layer, nn.BatchNorm1d):
-                        if x.dim() == 3:
-                            if (
-                                x.device.type == "mps"
-                            ):  # TODO: remove this when MPS supports for loop.
-                                x = torch.cat(
-                                    [(layer(slice_x.clone())).unsqueeze(0) for slice_x in x], dim=0
-                                )
-                            else:
-                                x = torch.cat(
-                                    [layer(slice_x).unsqueeze(0) for slice_x in x], dim=0
-                                )
-                        else:
-                            x = layer(x)
-                    else:
-                        if isinstance(layer, nn.Linear) and self.inject_into_layer(i):
-                            if x.dim() == 3:
-                                cov_list_layer = [
-                                    o.unsqueeze(0).expand((x.size(0), o.size(0), o.size(1)))
-                                    for o in cov_list
-                                ]
-                            else:
-                                cov_list_layer = cov_list
-                            x = torch.cat((x, *cov_list_layer), dim=-1)
-                        x = layer(x)
+                if layer is None:
+                    continue
+                if isinstance(layer, nn.Linear) and cont is not None and self.inject_into_layer(i):
+                    x = torch.cat((x, cont), dim=-1)
+                x = layer(x)
         return x
 
-                    
-                    
+
 class EncoderHVAE(nn.Module):
 
     def __init__(
         self,
         n_input, n_output,
-        n_cat_list = None,
         n_layers = 1,
         n_hidden = 128,
         dropout_rate = 0.1,
@@ -497,7 +300,6 @@ class EncoderHVAE(nn.Module):
         Args:
             n_input (int): Input feature dimensionality.
             n_output (int): Latent dimensionality.
-            n_cat_list (list[int], optional): Category counts for each categorical covariate.
             n_layers (int, optional): Number of hidden layers in the shared trunk.
             n_hidden (int, optional): Hidden layer width.
             dropout_rate (float, optional): Dropout applied in the shared trunk.
@@ -517,7 +319,6 @@ class EncoderHVAE(nn.Module):
         self.encoder = FCLayers(
             n_in=n_input,
             n_out=n_hidden,
-            n_cat_list=n_cat_list,
             n_layers=n_layers,
             n_hidden=n_hidden,
             dropout_rate=dropout_rate,
@@ -533,16 +334,15 @@ class EncoderHVAE(nn.Module):
             self.z_transformation = _identity
         self.var_activation = torch.exp if var_activation is None else var_activation
 
-    def forward(self, x: torch.Tensor, *cat_list: int):
+    def forward(self, x: torch.Tensor):
         """
         Args:
             x (Tensor): Input features, shape (batch, n_input).
-            *cat_list (Tensor): Categorical covariate tensors forwarded to `FCLayers`.
 
         Returns:
             tuple: `(dist, latent)` if `return_dist=True`, else `(mean, variance, latent)`.
         """
-        q = self.encoder(x, *cat_list)
+        q = self.encoder(x)
 
         q_m = self.mean_encoder(q)
 
@@ -562,13 +362,12 @@ class EncoderHVAE2(nn.Module):
     the library size, plus a softmax over components (`q_pi`).
     """
 
-    def __init__(self, n_input, n_output, n_cat_list = None, n_layers = 1, n_hidden = 128, dropout_rate = 0.1, distribution = "normal", var_eps = 1e-4, return_dist = False,
+    def __init__(self, n_input, n_output, n_layers = 1, n_hidden = 128, dropout_rate = 0.1, distribution = "normal", var_eps = 1e-4, return_dist = False,
     var_activation = None):
         """
         Args:
             n_input (int): Input feature dimensionality.
             n_output (int): Number of GMM components.
-            n_cat_list (list[int], optional): Category counts for each categorical covariate.
             n_layers (int, optional): Number of hidden layers in the shared trunk.
             n_hidden (int, optional): Hidden layer width.
             dropout_rate (float, optional): Dropout applied in the shared trunk.
@@ -586,7 +385,6 @@ class EncoderHVAE2(nn.Module):
         self.encoder = FCLayers(
             n_in=n_input,
             n_out=n_hidden,
-            n_cat_list=n_cat_list,
             n_layers=n_layers,
             n_hidden=n_hidden,
             dropout_rate=dropout_rate,
@@ -602,16 +400,15 @@ class EncoderHVAE2(nn.Module):
             self.z_transformation = _identity
         self.var_activation = torch.exp if var_activation is None else var_activation
 
-    def forward(self, x: torch.Tensor, *cat_list: int):
+    def forward(self, x: torch.Tensor):
         """
         Args:
             x (Tensor): Input features, shape (batch, n_input).
-            *cat_list (Tensor): Categorical covariate tensors forwarded to `FCLayers`.
 
         Returns:
             tuple: `(q_pi, mean, variance)`, where `q_pi` is a softmax over GMM components.
         """
-        q = self.encoder(x, *cat_list)
+        q = self.encoder(x)
         q_m = self.mean_encoder(q)
         q_v = self.var_activation(self.var_encoder(q)) + self.var_eps
         q_pi = self.mean_encoder2(q)
@@ -664,14 +461,13 @@ class DecoderHVAE3(nn.Module):
     """Decodes a latent `z` (plus library size and covariates) into ZINB parameters."""
 
     def __init__(
-        self, n_input, n_output, n_cat_list = None, n_layers = 1, n_hidden = 128, inject_covariates = True,
-        use_batch_norm = False, use_layer_norm = False, scale_activation = "softmax",
+        self, n_input, n_output, n_layers = 1, n_hidden = 128, inject_covariates = True,
+        use_batch_norm = False, use_layer_norm = False, scale_activation = "softmax", n_cont = 0,
     ):
         """
         Args:
             n_input (int): Latent dimensionality.
             n_output (int): Number of genes to decode.
-            n_cat_list (list[int], optional): Category counts for each categorical covariate.
             n_layers (int, optional): Number of hidden layers in the shared trunk.
             n_hidden (int, optional): Hidden layer width.
             inject_covariates (bool, optional): Whether covariates are concatenated into
@@ -680,11 +476,14 @@ class DecoderHVAE3(nn.Module):
             use_layer_norm (bool, optional): Use LayerNorm in the shared trunk.
             scale_activation (str, optional): Activation for `px_scale`: `"softmax"` or
                 `"softplus"`.
+            n_cont (int, optional): Dimensionality of the continuous covariates (the batch
+                embedding) injected into the decoder trunk; 0 disables covariate injection.
         """
         super().__init__()
-        self.px_decoder = FCLayers(n_in=n_input, n_out=n_hidden, n_cat_list=n_cat_list, n_layers=n_layers,
+        self.px_decoder = FCLayers(n_in=n_input, n_out=n_hidden, n_layers=n_layers,
             n_hidden=n_hidden, dropout_rate=0, inject_covariates=inject_covariates, use_batch_norm=use_batch_norm,
-            use_layer_norm=use_layer_norm,)
+            use_layer_norm=use_layer_norm, n_cont=n_cont,)
+        self.use_covariates = n_cont > 0
 
         if scale_activation == "softmax":
             px_scale_activation = nn.Softmax(dim=-1)
@@ -698,20 +497,20 @@ class DecoderHVAE3(nn.Module):
         self.px_r_decoder = nn.Linear(n_hidden, n_output)
         self.px_dropout_decoder = nn.Linear(n_hidden, n_output)
 
-    def forward(self, dispersion: str,z: torch.Tensor, library: torch.Tensor, covariates: torch.Tensor,*cat_list: int,):
+    def forward(self, dispersion: str, z: torch.Tensor, library: torch.Tensor, covariates: torch.Tensor):
         """
         Args:
             dispersion (str): `"gene-cell"` to compute a per-gene-per-cell dispersion `px_r`
                 from the decoder, or anything else to skip it (caller supplies `px_r`).
             z (Tensor): Latent representation, shape (batch, n_input).
             library (Tensor): Log library size, shape (batch, 1), used to scale `px_rate`.
-            covariates (Tensor): Covariate tensor forwarded to the decoder trunk.
-            *cat_list (Tensor): Categorical covariate tensors forwarded to `FCLayers`.
+            covariates (Tensor): Batch-embedding tensor, shape (batch, n_cont); injected into
+                the decoder trunk only when the decoder was built with `n_cont > 0`.
 
         Returns:
             tuple: `(px_scale, px_r, px_rate, px_dropout)` ZINB parameters.
         """
-        px = self.px_decoder(z, *cat_list)
+        px = self.px_decoder(z, cont=covariates if self.use_covariates else None)
         px_scale = self.px_scale_decoder(px)
         px_dropout = torch.nn.functional.relu(self.px_dropout_decoder(px))
         px_rate = torch.nn.functional.relu(torch.exp(library) * px_scale)
@@ -905,6 +704,7 @@ class HVAE_Lightning(pl.LightningModule):
         gene_contrastive_cross_batch_only=True,
         library_kl="original",       # "original", "marginalized" or "batch"
         shared_base_prior=True,      # shared-base + per-component-deviation GMM priors
+        decoder_covariates=False,    # if True, inject the batch embedding into the decoder
     ):
         """
         Args:
@@ -964,6 +764,9 @@ class HVAE_Lightning(pl.LightningModule):
             shared_base_prior (bool, optional): Parameterize the library and `z` GMM
                 priors as a shared base plus per-component deviations (True) or with
                 independent per-component parameters (False).
+            decoder_covariates (bool, optional): Inject the batch covariate embedding into
+                every decoder layer, so batch-specific expression can be explained by the
+                decoder instead of having to be encoded in `z`.
         """
         super().__init__()
         self.save_hyperparameters()
@@ -979,7 +782,8 @@ class HVAE_Lightning(pl.LightningModule):
 
         self.z_encoder = EncoderHVAE(input_dim, n_latent, n_layers=n_layers)
         self.l_encoder = EncoderHVAE2(n_latent, num_components, n_layers=n_layers)
-        self.decoder = DecoderHVAE3(n_latent, n_input, n_layers=n_layers, use_layer_norm=True)
+        self.decoder = DecoderHVAE3(n_latent, n_input, n_layers=n_layers, use_layer_norm=True,
+                                    n_cont=20 if decoder_covariates else 0)
 
         if library_kl not in ("original", "marginalized", "batch"):
             raise ValueError(f"library_kl must be 'original', 'marginalized' or 'batch', got {library_kl!r}")
@@ -1023,20 +827,6 @@ class HVAE_Lightning(pl.LightningModule):
         self.kl_weight_start = kl_weight
         self.kl_anneal_warmup_epochs = kl_anneal_warmup_epochs
         self.kl_anneal_max = kl_anneal_max
-
-    def one_hot_encode(self, labels, num_classes):
-        """
-        Args:
-            labels (Tensor): Integer class labels, shape (batch,).
-            num_classes (int): Number of classes.
-
-        Returns:
-            Tensor: One-hot encoding, shape (batch, num_classes).
-        """
-        batch_size = labels.shape[0]
-        one_hot = torch.zeros(batch_size, num_classes, device=labels.device)
-        one_hot.scatter_(1, labels.unsqueeze(1), 1)
-        return one_hot
 
     def _current_kl_weight(self):
         """
@@ -1085,9 +875,9 @@ class HVAE_Lightning(pl.LightningModule):
                 as the covariate embedding input and to select/offset the library size.
 
         Returns:
-            dict: Model outputs, including latent stats (`z_mu`, `z_var`, `z`), library-size
-                stats (`l_pi`, `l_mu`, `l_var`, `library`, `ql`), decoder outputs (`px_scale`,
-                `px_r_dec`, `px_rate`, `px_dropout_dec`), the component logits `logits_q_c`,
+            dict: Model outputs: latent stats (`z_mu`, `z_var`), library-size stats
+                (`l_pi`, `l_mu`, `l_var`), decoder outputs (`px_r_dec`, `px_rate`,
+                `px_dropout_dec`), the component logits `logits_q_c`,
                 and the auxiliary `gene_pred` (marker-gene bin regression, or a projection
                 embedding for contrastive learning when `use_gene_contrastive=True`).
         """
@@ -1105,18 +895,17 @@ class HVAE_Lightning(pl.LightningModule):
         l_pi, l_mu, l_var = self.l_encoder(z_mu)
 
         c = torch.multinomial(l_pi, num_samples=1).squeeze()
+        std = torch.sqrt(l_var + 1e-8)                               # [B,K]
         if self.random_assignment == False and batch_labels is not None:
-            std = torch.sqrt(l_var + 1e-8)                           # [B,K]
             lib_sample = l_mu[torch.arange(len(batch_labels)), batch_labels] + \
                       std[torch.arange(len(batch_labels)), batch_labels] * torch.randn_like(l_var[:, 0])
             library = self.loglib_baseline_per_batch[batch_labels] + lib_sample
 
         else:
-            std = torch.sqrt(l_var + 1e-8)                           # [B,K]
             lib_sample = l_mu[torch.arange(len(c)), c] + std[torch.arange(len(c)), c] * torch.randn_like(l_var[:, 0])
             library = self.loglib_baseline_per_batch[batch_labels] + lib_sample
 
-        px_scale, px_r_dec, px_rate, px_dropout_dec = self.decoder(self.dispersion, z, library.unsqueeze(dim=-1), covariates)
+        _, px_r_dec, px_rate, px_dropout_dec = self.decoder(self.dispersion, z, library.unsqueeze(dim=-1), covariates)
 
         logits_q_c = self.c_head(z_mu)
         gene_pred = (
@@ -1128,15 +917,10 @@ class HVAE_Lightning(pl.LightningModule):
         return {
             "z_mu": z_mu,
             "z_var": z_var,
-            "z": z,
-            "ql": Normal(l_mu, torch.sqrt(l_var)),
             "l_pi": l_pi, "l_mu": l_mu, "l_var": l_var,
-            "library": library,
-            "px_scale": px_scale,
             "px_r_dec": px_r_dec,                 # decoder-produced (may ignore under 'gene' dispersion)
             "px_rate": px_rate,
             "px_dropout_dec": px_dropout_dec,     # decoder-produced gate
-            "covariates": covariates,
             "logits_q_c": logits_q_c,
             "gene_pred": gene_pred
         }
@@ -1288,7 +1072,6 @@ class HVAE_Lightning(pl.LightningModule):
         scheduler = StepLR(optimizer, step_size=7, gamma=0.5)
         return {
             "optimizer": optimizer,
-            "gradient_clip_val": 1.0,
             "lr_scheduler": {"scheduler": scheduler}
         }
 
