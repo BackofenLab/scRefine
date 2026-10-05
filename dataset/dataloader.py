@@ -101,21 +101,32 @@ class AnnDataCollator:
     densified; the full expression matrix stays sparse and is sliced per batch.
     """
 
-    def __init__(self, adata, batch_ids, batch_labels, marker_genes, bin_marker_genes=True, n_bins=10):
+    def __init__(self, adata, batch_ids, batch_labels, marker_genes, bin_marker_genes=True, n_bins=10,
+                 class_ids=None):
         """
         Args:
             adata (AnnData): Input data with raw counts in `.X`.
             batch_ids (np.ndarray): Integer batch/domain id per cell, shape (n_cells,).
             batch_labels (np.ndarray): Batch/domain label per cell, shape (n_cells,); used
                 to bin per dataset and to label the printed bin statistics.
-            marker_genes (list): Marker gene symbols; symbols not in `adata.var_names` are
-                skipped (and reported).
+            marker_genes (list or None): Marker gene symbols; symbols not in
+                `adata.var_names` are skipped (and reported). `None` disables the
+                marker-gene targets (e.g. for `train_simclr.py`).
             bin_marker_genes (bool, optional): Bin the marker-gene targets per dataset
                 instead of leaving them as raw log1p expression.
             n_bins (int, optional): Number of bins per dataset when binning.
+            class_ids (np.ndarray, optional): Integer class label per cell, shape
+                (n_cells,), returned in the class-label slot of each batch (e.g. for
+                supervised contrastive learning). `None` leaves that slot empty.
         """
         self.X = adata.X
         self.batch_ids = torch.as_tensor(batch_ids, dtype=torch.long)
+        self.class_ids = None if class_ids is None else torch.as_tensor(class_ids, dtype=torch.long)
+
+        if marker_genes is None:
+            self.gene_targets = None
+            self.n_marker_genes = 0
+            return
 
         # First occurrence of each gene symbol, matching `list.index` semantics.
         gene_position = {}
@@ -157,9 +168,10 @@ class AnnDataCollator:
             batch_indices (list[int]): Cell indices selected for this batch.
 
         Returns:
-            tuple: `(X, None, batch_ids, gene_targets)` - dense float32 counts, an unused
-                class-label slot (kept for the model's batch layout), integer batch ids,
-                and the marker-gene targets as a NumPy array.
+            tuple: `(X, class_ids, batch_ids, gene_targets)` - dense float32 counts,
+                integer class labels (`None` unless the collator was built with
+                `class_ids`), integer batch ids, and the marker-gene targets as a NumPy
+                array (`None` if built with `marker_genes=None`).
         """
         idx = np.asarray(batch_indices, dtype=np.int64)
 
@@ -168,7 +180,9 @@ class AnnDataCollator:
             X_batch = X_batch.toarray()
         X_tensor = torch.as_tensor(X_batch, dtype=torch.float32)
 
-        return X_tensor, None, self.batch_ids[idx], self.gene_targets[idx]
+        class_ids = None if self.class_ids is None else self.class_ids[idx]
+        gene_targets = None if self.gene_targets is None else self.gene_targets[idx]
+        return X_tensor, class_ids, self.batch_ids[idx], gene_targets
 
 
 DataInfo = namedtuple("DataInfo", ["batch_ids", "lib_sizes", "n_genes", "n_batches", "n_marker_genes"])

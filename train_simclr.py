@@ -5,12 +5,59 @@ import scanpy as sc
 import os
 from sklearn.manifold import TSNE
 import argparse
-from dataset.dataloader import DataLoaderManager
+from torch.utils.data import DataLoader, Subset
+from dataset.dataloader import AnnDataCollator, IndexDataset
 from plotting import plot_tsne
 
 
+def build_simclr_dataloaders(adata, dataset_symbol, label_symbols, batch_size,
+                             sample_fraction, seed=42, num_workers=None):
+    """
+    Builds the DataLoaders for supervised contrastive training: a training loader over a
+    random `sample_fraction` of the cells, in plain shuffled minibatches (no domain-aware
+    sampling), and an embedding loader over all cells in their original order.
+
+    Args:
+        adata (AnnData): Input data with raw counts in `.X`.
+        dataset_symbol (str): Column in `adata.obs` holding the batch/domain label.
+        label_symbols (str): Column in `adata.obs` holding the class label used for the
+            contrastive loss's positive-pair mask.
+        batch_size (int): Minibatch size for both loaders.
+        sample_fraction (float): Fraction of cells used for training.
+        seed (int, optional): Seed for drawing the training cells.
+        num_workers (int, optional): Training-loader workers; defaults to
+            `min(4, os.cpu_count())`.
+
+    Returns:
+        tuple: `(train_loader, embed_loader)`. Both yield
+            `(X, class_ids, batch_ids, None)` batches.
+    """
+    batch_labels = adata.obs[dataset_symbol].to_numpy()
+    _, batch_ids = np.unique(batch_labels, return_inverse=True)
+    _, class_ids = np.unique(adata.obs[label_symbols].astype(str).to_numpy(), return_inverse=True)
+
+    collator = AnnDataCollator(adata, batch_ids, batch_labels, marker_genes=None, class_ids=class_ids)
+    dataset = IndexDataset(adata.n_obs)
+
+    n_train = int(sample_fraction * adata.n_obs)
+    if n_train < 2:
+        raise ValueError(
+            f"sample_fraction={sample_fraction} leaves {n_train} training cells; at least 2 are needed."
+        )
+    train_indices = np.random.default_rng(seed).permutation(adata.n_obs)[:n_train]
+
+    if num_workers is None:
+        num_workers = min(4, os.cpu_count())
+
+    # drop_last avoids a trailing minibatch of one cell, which BatchNorm cannot train on.
+    train_loader = DataLoader(Subset(dataset, train_indices), batch_size=batch_size, shuffle=True,
+                              drop_last=n_train > batch_size, num_workers=num_workers,
+                              collate_fn=collator, pin_memory=True)
+    embed_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collator)
+    return train_loader, embed_loader
+
+
 def main(train_data_name,
-         gene_names,
          dataset_symbol,
          label_symbols,
          embedding_save,
@@ -25,16 +72,17 @@ def main(train_data_name,
          contrastive_model = "contrastive_model.pkl",
          plot_name = None):
     """
-    Trains a SimClr-style contrastive `Encoder` on single-cell data with an NT-Xent loss,
-    then embeds the validation split and saves the resulting embeddings/labels.
+    Trains a SimClr-style contrastive `Encoder` on single-cell data with a supervised
+    NT-Xent loss (cells sharing a label are positives) on a random `sample_fraction` of the
+    cells, then embeds all cells and saves the resulting embeddings/labels.
 
     Args:
-        train_data_name (str): Path to the input `.h5ad` dataset.
-        gene_names (list): Marker gene symbols forwarded to the data loader (may be empty).
+        train_data_name (str): Path to the input `.h5ad` dataset (raw counts in `.X`).
         dataset_symbol (str): Column in `adata.obs` used as the domain/batch key.
         label_symbols (str): Column in `adata.obs` used as the class key for the
             contrastive loss's positive-pair mask.
-        embedding_save (str): Output `.npz` path for the saved embeddings and labels.
+        embedding_save (str): Output `.npz` path for the embeddings (`embedding`,
+            `labels`, `batches`, `obs_names`), in the order of the input `.h5ad`.
         latent_dim (int, optional): Dimensionality of the encoder's projection head output.
         learning_rate (float, optional): Adam learning rate.
         batch_size (int, optional): Training batch size.
@@ -42,8 +90,8 @@ def main(train_data_name,
         eval_every (int, optional): Epoch interval at which the model checkpoint is saved.
         print_every (int, optional): Epoch interval at which training loss is printed.
         temperature (float, optional): Temperature for the NT-Xent contrastive loss.
-        sample_fraction (float, optional): Fraction of data used for training (passed as
-            `train_frac` to `DataLoaderManager`); the remainder is used for validation.
+        sample_fraction (float, optional): Fraction of cells used to train the encoder;
+            all cells are embedded afterwards.
         contrastive_model (str, optional): Output path for the trained encoder's state dict.
         plot_name (str, optional): If given, saves a TSNE plot of the final embeddings here.
     """
@@ -55,34 +103,12 @@ def main(train_data_name,
 
     train_adata = sc.read(os.path.join(train_data_name))
 
-    data_manager = DataLoaderManager(
-            domain_key=dataset_symbol,
-            class_key=label_symbols,
-            covariate_keys=None,
-            feature_list=None,
-            normalize_total=False,
-            log1p=False,
-            batch_size=batch_size,
-            train_frac=sample_fraction,
-            use_sampler=True,
-            sampler_emb=None,
-            sampler_knn=None,
-            sampler_domain_minibatch_strategy='proportional',
-            domain_coverage=None,
-            dist_metric='euclidean',
-            p_intra_knn=0.0,
-            p_intra_domain=0.0,
-            use_faiss=True,
-            use_ivf=True,
-            ivf_nprobe=10,
-            preload_dense=False,
-            device=torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    train_dataloader, embed_dataloader = build_simclr_dataloaders(
+            train_adata, dataset_symbol, label_symbols,
+            batch_size=batch_size, sample_fraction=sample_fraction, seed=seed,
     )
 
-    train_dataloader, val_dataloader, data_structure, info = data_manager.anndata_to_dataloader(train_adata, dataset_symbol,gene_names)
-    batches_out,data_out,input_size, num_batches, number_marker_genes = info
-
-    model = Encoder(input_size, latent_dim=latent_dim).to(device).float()
+    model = Encoder(train_adata.n_vars, latent_dim=latent_dim).to(device).float()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -90,6 +116,7 @@ def main(train_data_name,
 
     # Training loop
     for epoch in range(num_epochs):
+        model.train()
         for batch_idx, batch_data in enumerate(train_dataloader):
             data, labels, _, _ = batch_data
             data = data.to(device).float()
@@ -112,25 +139,26 @@ def main(train_data_name,
 
     model.eval()
     embeddings = []
-    labels_train = []
 
 
     with torch.no_grad():
-        for batch_idx, batch_data in enumerate(val_dataloader):
-            data, labels, _, _ = batch_data
+        for batch_idx, batch_data in enumerate(embed_dataloader):
+            data, _, _, _ = batch_data
             data = data.to(device).float()
             z = model(data)
             embeddings.extend(z.cpu().numpy())
-            labels_train.extend(labels.numpy())
 
-    
-    
-    np.savez(embedding_save, embedding = embeddings, labels = labels_train)
+    embeddings = np.array(embeddings)
+    labels = train_adata.obs[label_symbols].astype(str).to_numpy()
+
+    np.savez(embedding_save, embedding = embeddings, labels = labels,
+             batches = train_adata.obs[dataset_symbol].astype(str).to_numpy(),
+             obs_names = train_adata.obs_names.to_numpy())
 
     if plot_name != None:
         tsne = TSNE(n_components=2, random_state=0)
-        tsne_projection = tsne.fit_transform(np.array(embeddings))
-        plot_tsne(tsne_projection, labels_train, plot_name)
+        tsne_projection = tsne.fit_transform(embeddings)
+        plot_tsne(tsne_projection, labels, plot_name)
 
 
 
@@ -139,9 +167,9 @@ def nt_xent_loss(z, labels, temperature=0.5):
     z: latent dimension
     labels: labels of points in latent dimension
     temperature: parameter to scale the similarity matrix
-    
+
     """
-    
+
     batch_size = z.shape[0]
 
     z = torch.nn.functional.normalize(z, dim=1)
@@ -167,7 +195,7 @@ def nt_xent_loss(z, labels, temperature=0.5):
     positive_log_prob = (positive_mask * log_prob).sum(dim=1) / (
         positive_mask.sum(dim=1) + 1e-10
     )
-    
+
     loss = -positive_log_prob.mean()
 
     return loss
@@ -194,14 +222,6 @@ if __name__ == "__main__":
                                 help='symbol',
                                 default = 'cell_subtype',
                                 type=str)
-    cmdline_parser.add_argument('-m', '--data_symbol',
-                                help='data_symbol',
-                                default = 'data',
-                                type=str)
-    cmdline_parser.add_argument('-g', '--gene_symbol',
-                                help='gene_names',
-                                default = 'gene_names',
-                                type=str)
     cmdline_parser.add_argument('-z', '--latent_dim',
                                 help='latent dim of contrastive model',
                                 default = 1024,
@@ -218,6 +238,10 @@ if __name__ == "__main__":
                                 help='model temp',
                                 default = 0.5,
                                 type=float)
+    cmdline_parser.add_argument('-f', '--sample_fraction',
+                                help='fraction of cells used to train the encoder (all cells are embedded)',
+                                default = 0.1,
+                                type=float)
     cmdline_parser.add_argument('-c', '--contrastive_model',
                                 help='contrastive_model',
                                 default = "contrastive_model.pkl",
@@ -227,11 +251,12 @@ if __name__ == "__main__":
                                 default = None,
                                 type=str)
 
-    args, unknowns = cmdline_parser.parse_known_args()
+    args = cmdline_parser.parse_args()
 
-    main(train_data_name=args.data_path, gene_names=[],
+    main(train_data_name=args.data_path,
             dataset_symbol=args.dataset_symbol, label_symbols=args.label_symbol,
             embedding_save=args.embedding_save, latent_dim=args.latent_dim, learning_rate=0.0001,
             batch_size=args.batch_size, num_epochs=args.epochs,
             eval_every=1, print_every=1,
-            temperature=args.temperature, contrastive_model = args.contrastive_model, plot_name = args.plot_name)
+            temperature=args.temperature, sample_fraction=args.sample_fraction,
+            contrastive_model = args.contrastive_model, plot_name = args.plot_name)

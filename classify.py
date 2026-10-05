@@ -78,6 +78,7 @@ def train_classifier(data_path, classification_output, model_path):
         loss_added = 0
         for data, label in train_dataloader:
             data = data.to(device).float()
+            label = label.to(device)
 
             classification = classifier_model(data)
             loss = criterion(classification, label)
@@ -103,6 +104,7 @@ def train_classifier(data_path, classification_output, model_path):
             for data, label in val_dataloader:
 
                 data = data.to(device).float()
+                label = label.to(device)
 
                 val_outputs = classifier_model(data)
                 val_loss += criterion(val_outputs, label)
@@ -144,7 +146,8 @@ def predict_classifier(data, model_path, output_path):
     labels = np.array([label_set.index(l) for l in labels])
     
     classifier_model = Classifier(np.shape(embeddings)[1], 250, len(label_set)).to(device)
-    classifier_model.load_state_dict(torch.load(model_path))
+    classifier_model.load_state_dict(torch.load(model_path, map_location=device))
+    classifier_model.eval()
 
     X_test = torch.tensor(embeddings)
     y_test = torch.tensor(labels)
@@ -285,6 +288,7 @@ if __name__ == "__main__":
     cmdline_parser.add_argument('-r', '--run_type',
                                 help='nn/kmeans/predict',
                                 default = 'nn',
+                                choices = ['nn', 'kmeans', 'predict'],
                                 type=str)
     cmdline_parser.add_argument('-m', '--model_path',
                                 help='model path',
@@ -314,24 +318,29 @@ if __name__ == "__main__":
                                 help='model temp',
                                 default = 0.5,
                                 type=float)
+    cmdline_parser.add_argument('-f', '--sample_fraction',
+                                help='fraction of cells used to train the contrastive encoder (all cells are embedded)',
+                                default = 0.1,
+                                type=float)
     cmdline_parser.add_argument('-c', '--contrastive_model',
                                 help='contrastive_model',
                                 default = "contrastive_model.pkl",
                                 type=str)
 
-    args, unknowns = cmdline_parser.parse_known_args()
+    args = cmdline_parser.parse_args()
 
     #### create embedding using contrastive learning
 
     if args.run_type == "predict": predict_classifier(args.embedding_save, args.model_path, args.evaluation)
     else:
 
-        main_simclr(train_data_name = args.data_path, gene_names = [],
+        main_simclr(train_data_name = args.data_path,
                 dataset_symbol = args.dataset_symbol, label_symbols = args.label_symbol,
                 embedding_save = args.embedding_save, latent_dim = args.latent_dim, learning_rate = 0.0001,
                 batch_size = args.batch_size, num_epochs = args.epochs,
                 eval_every = 1, print_every = 1,
-                temperature = args.temperature, contrastive_model = args.contrastive_model)
+                temperature = args.temperature, sample_fraction = args.sample_fraction,
+                contrastive_model = args.contrastive_model)
 
 
         #### train classifier
