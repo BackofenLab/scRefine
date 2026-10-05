@@ -252,8 +252,67 @@ def kl_divergence_gmm(q_pi, q_mu, q_sigma, p_mu, p_sigma, p_pi):
     p_pi = p_pi.unsqueeze(0).expand(batch_size, -1)  
     kl_c = (q_pi * (q_pi.log() - p_pi.log())).sum(dim=-1)  # (batch_size,)
 
-    return kl_z + kl_c  
-    
+    return kl_z + kl_c
+
+
+def kl_divergence_gmm_marginalized(q_pi, q_mu, q_sigma, p_mu, p_sigma, p_pi):
+    """
+    Component-marginalized KL between a per-sample Gaussian-mixture posterior `q(z, c)`
+    and a Gaussian-mixture prior `p(z, c)`:
+    `sum_k q_pi_k * KL(q(z|c=k) || p(z|c=k)) + KL(q(c) || p(c))`.
+
+    Fixed version of `kl_divergence_gmm` (used when `library_kl="marginalized"`), which sums
+    the per-component KLs over all components *before* weighting by `q_pi`, so the
+    weighting cancels out (`q_pi` sums to 1) and every component's KL counts fully.
+
+    Args:
+        q_pi (Tensor): Posterior component responsibilities, shape (batch, K).
+        q_mu (Tensor): Posterior mean per component, shape (batch, K).
+        q_sigma (Tensor): Posterior std dev per component, shape (batch, K).
+        p_mu (Tensor): Prior mean per component, shape (K, 1).
+        p_sigma (Tensor): Prior std dev per component, shape (K, 1).
+        p_pi (Tensor): Prior component probabilities, shape (K,).
+
+    Returns:
+        Tensor: Per-sample KL divergence, shape (batch,).
+    """
+    kl_per_component = kl_divergence(
+        Normal(q_mu, q_sigma),
+        Normal(p_mu.squeeze(-1).unsqueeze(0), p_sigma.squeeze(-1).unsqueeze(0)),
+    )                                                            # (batch, K)
+    kl_z = (q_pi * kl_per_component).sum(dim=-1)
+    kl_c = (q_pi * (q_pi.log() - p_pi.log().unsqueeze(0))).sum(dim=-1)
+    return kl_z + kl_c
+
+
+def kl_divergence_batch_component(q_mu, q_sigma, p_mu, p_sigma, batch_labels):
+    """
+    Library-size KL restricted to each cell's own batch component:
+    `KL(q(l | c=b) || p(l | c=b))` with `b` the cell's batch label (used when
+    `library_kl="batch"`).
+
+    This matches the generative path in `HVAE_Lightning.forward`, which samples the
+    library size from the batch-label component (not from `q_pi`), so each cell's library
+    Gaussian is pulled towards exactly the prior component it is sampled from. The
+    component responsibilities `q_pi` and prior weights `p_pi` play no role here.
+
+    Args:
+        q_mu (Tensor): Posterior mean per component, shape (batch, K).
+        q_sigma (Tensor): Posterior std dev per component, shape (batch, K).
+        p_mu (Tensor): Prior mean per component, shape (K, 1).
+        p_sigma (Tensor): Prior std dev per component, shape (K, 1).
+        batch_labels (Tensor): Integer batch id per cell, shape (batch,).
+
+    Returns:
+        Tensor: Per-sample KL divergence, shape (batch,).
+    """
+    rows = torch.arange(len(batch_labels), device=q_mu.device)
+    return kl_divergence(
+        Normal(q_mu[rows, batch_labels], q_sigma[rows, batch_labels]),
+        Normal(p_mu[batch_labels, 0], p_sigma[batch_labels, 0]),
+    )
+
+
 class FCLayers(nn.Module):
     """A helper class to build fully-connected layers for a neural network based on scVI github repository.
 
@@ -562,32 +621,42 @@ class EncoderHVAE2(nn.Module):
 class LearnableGMMPrior(nn.Module):
     """A learnable Gaussian-mixture prior over a low-dimensional (e.g. library-size) space.
 
-    Each component's mean and log-std are a shared base plus a per-component (per-batch/
-    dataset) deviation from it, rather than fully independent per-component parameters —
-    see `models/vae.py::LearnableGMMPrior` for the independent-component version this is
-    a copy of.
+    With `shared_base=True`, each component's mean and log-std are a shared base plus a
+    per-component (per-batch/dataset) deviation from it; with `shared_base=False`, every
+    component has fully independent parameters.
     """
 
-    def __init__(self, latent_dim, num_components):
+    def __init__(self, latent_dim, num_components, shared_base=True):
         """
         Args:
             latent_dim (int): Dimensionality of each Gaussian component.
             num_components (int): Number of mixture components.
+            shared_base (bool, optional): Parameterize components as a shared base plus a
+                per-component deviation (True) or independently (False).
         """
         super().__init__()
         self.num_components = num_components
         self.latent_dim = latent_dim
+        self.shared_base = shared_base
         self.pi_logits = nn.Parameter(torch.ones(num_components))
-        self.base_mu = nn.Parameter(torch.randn(1, latent_dim))
-        self.delta_mu = nn.Parameter(torch.randn(num_components, latent_dim) * 0.01)
-        self.base_log_sigma = nn.Parameter(torch.zeros(1, latent_dim))
-        self.delta_log_sigma = nn.Parameter(torch.zeros(num_components, latent_dim))
+        if shared_base:
+            self.base_mu = nn.Parameter(torch.randn(1, latent_dim))
+            self.delta_mu = nn.Parameter(torch.randn(num_components, latent_dim) * 0.01)
+            self.base_log_sigma = nn.Parameter(torch.zeros(1, latent_dim))
+            self.delta_log_sigma = nn.Parameter(torch.zeros(num_components, latent_dim))
+        else:
+            self.mu = nn.Parameter(torch.randn(num_components, latent_dim))
+            self.log_sigma = nn.Parameter(torch.zeros(num_components, latent_dim))
 
     def forward(self):
         """Returns: tuple: `(mu, sigma, pi)` — component means, std devs, and mixture weights."""
         pi = torch.softmax(self.pi_logits, dim=0)
-        mu = self.base_mu + self.delta_mu
-        sigma = torch.exp(self.base_log_sigma + self.delta_log_sigma)
+        if self.shared_base:
+            mu = self.base_mu + self.delta_mu
+            sigma = torch.exp(self.base_log_sigma + self.delta_log_sigma)
+        else:
+            mu = self.mu
+            sigma = torch.exp(self.log_sigma)
         return mu, sigma, pi
 
 
@@ -768,31 +837,41 @@ def gmvae_kl_with_mmd(
 class LearnableGMMPriorZ(nn.Module):
     """A learnable Gaussian-mixture prior over the main latent space `z` (log-var parameterized).
 
-    Each component's mean and log-variance are a shared base plus a per-component (per-
-    batch/dataset) deviation from it, rather than fully independent per-component
-    parameters — see `models/vae.py::LearnableGMMPriorZ` for the independent-component
-    version this is a copy of.
+    With `shared_base=True`, each component's mean and log-variance are a shared base plus
+    a per-component (per-batch/dataset) deviation from it; with `shared_base=False`, every
+    component has fully independent parameters.
     """
 
-    def __init__(self, z_dim, num_components):
+    def __init__(self, z_dim, num_components, shared_base=True):
         """
         Args:
             z_dim (int): Dimensionality of the latent space.
             num_components (int): Number of mixture components.
+            shared_base (bool, optional): Parameterize components as a shared base plus a
+                per-component deviation (True) or independently (False).
         """
         super().__init__()
         self.z_dim = z_dim
         self.K = num_components
-        self.base_mu = nn.Parameter(torch.randn(1, z_dim) * 0.01)
-        self.delta_mu = nn.Parameter(torch.randn(self.K, z_dim) * 0.01)
-        self.base_logvar = nn.Parameter(torch.zeros(1, z_dim))
-        self.delta_logvar = nn.Parameter(torch.zeros(self.K, z_dim))
+        self.shared_base = shared_base
+        if shared_base:
+            self.base_mu = nn.Parameter(torch.randn(1, z_dim) * 0.01)
+            self.delta_mu = nn.Parameter(torch.randn(self.K, z_dim) * 0.01)
+            self.base_logvar = nn.Parameter(torch.zeros(1, z_dim))
+            self.delta_logvar = nn.Parameter(torch.zeros(self.K, z_dim))
+        else:
+            self.mu = nn.Parameter(torch.randn(self.K, z_dim) * 0.01)
+            self.logvar = nn.Parameter(torch.zeros(self.K, z_dim))
         self.logits_pi = nn.Parameter(torch.zeros(self.K))
 
     def forward(self):
         """Returns: tuple: `(mu, logvar, pi)` — component means, log-variances, and mixture weights."""
-        p_mu = self.base_mu + self.delta_mu
-        p_logvar = self.base_logvar + self.delta_logvar
+        if self.shared_base:
+            p_mu = self.base_mu + self.delta_mu
+            p_logvar = self.base_logvar + self.delta_logvar
+        else:
+            p_mu = self.mu
+            p_logvar = self.logvar
         p_pi = F.softmax(self.logits_pi, dim=0)
         return p_mu, p_logvar, p_pi
 
@@ -824,6 +903,8 @@ class HVAE_Lightning(pl.LightningModule):
         gene_contrastive_temperature=0.5,
         gene_contrastive_bandwidth=None,
         gene_contrastive_cross_batch_only=True,
+        library_kl="original",       # "original", "marginalized" or "batch"
+        shared_base_prior=True,      # shared-base + per-component-deviation GMM priors
     ):
         """
         Args:
@@ -874,6 +955,15 @@ class HVAE_Lightning(pl.LightningModule):
                 compares cross-batch pairs (batch-integration signal). If False, all pairs
                 are compared by marker-gene-expression similarity regardless of batch,
                 favoring cell-type structure over batch alignment.
+            library_kl (str, optional): Library-size KL variant. `"original"` uses
+                `kl_divergence_gmm` (sums every component's KL, with the variance passed
+                as std dev); `"marginalized"` weights each component's KL by `q_pi`
+                (`kl_divergence_gmm_marginalized`); `"batch"` only uses the KL of each
+                cell's batch-label component, matching how `forward` samples the library
+                (`kl_divergence_batch_component`).
+            shared_base_prior (bool, optional): Parameterize the library and `z` GMM
+                priors as a shared base plus per-component deviations (True) or with
+                independent per-component parameters (False).
         """
         super().__init__()
         self.save_hyperparameters()
@@ -891,13 +981,19 @@ class HVAE_Lightning(pl.LightningModule):
         self.l_encoder = EncoderHVAE2(n_latent, num_components, n_layers=n_layers)
         self.decoder = DecoderHVAE3(n_latent, n_input, n_layers=n_layers, use_layer_norm=True)
 
-        self.gmm_prior = LearnableGMMPrior(1, num_components=num_components).to(device)
+        if library_kl not in ("original", "marginalized", "batch"):
+            raise ValueError(f"library_kl must be 'original', 'marginalized' or 'batch', got {library_kl!r}")
+        self.library_kl = library_kl
+
+        self.gmm_prior = LearnableGMMPrior(1, num_components=num_components,
+                                           shared_base=shared_base_prior).to(device)
 
         self.c_head = nn.Sequential(
             nn.Linear(n_latent, 256), nn.ReLU(),
             nn.Linear(256, num_components)
         )
-        self.gmm_prior_z = LearnableGMMPriorZ(n_latent, num_components).to(device)
+        self.gmm_prior_z = LearnableGMMPriorZ(n_latent, num_components,
+                                              shared_base=shared_base_prior).to(device)
         self.mmd_weight = mmd_weight
 
         self.use_gene_contrastive = use_gene_contrastive
@@ -1049,7 +1145,7 @@ class HVAE_Lightning(pl.LightningModule):
     def compute_loss(self, x, output, gene, batch_labels=None):
         """
         Computes the total training loss: a ZINB reconstruction term, an annealed KL term
-        (latent `z` + library size, via `gmvae_kl_with_mmd`/`kl_divergence_gmm`), and an
+        (latent `z` + library size, via `gmvae_kl_with_mmd` and the `library_kl` variant), and an
         auxiliary marker-gene term — an MSE regression loss against binned marker-gene
         expression by default, or an NT-Xent contrastive loss directly on raw
         log-normalized marker-gene expression when `self.use_gene_contrastive=True`.
@@ -1059,9 +1155,10 @@ class HVAE_Lightning(pl.LightningModule):
             output (dict): The dict returned by `forward`.
             gene (array-like): Marker-gene targets, shape (batch, prediction_genes).
             batch_labels (Tensor, optional): Integer batch/domain id per sample, shape
-                (batch,). Only used when `self.use_gene_contrastive=True` and
-                `self.gene_contrastive_cross_batch_only=True`, to restrict the contrastive
-                loss to cross-batch pairs (see `gene_expression_contrastive_loss`).
+                (batch,). Required when `self.library_kl="batch"`, to select each cell's
+                library component. Otherwise only used when `self.use_gene_contrastive=True`
+                and `self.gene_contrastive_cross_batch_only=True`, to restrict the
+                contrastive loss to cross-batch pairs (see `gene_expression_contrastive_loss`).
 
         Returns:
             dict: `{"train_loss": ..., "recon": ..., "kl_z_total": ..., "kl_l": ...,
@@ -1078,7 +1175,16 @@ class HVAE_Lightning(pl.LightningModule):
 
 
         p_mu_l, p_sigma_l, p_pi_l = self.gmm_prior()
-        kl_l = kl_divergence_gmm(l_pi, l_mu, l_var, p_mu_l, p_sigma_l, p_pi_l).mean()
+        if self.library_kl == "marginalized":
+            kl_l = kl_divergence_gmm_marginalized(
+                l_pi, l_mu, torch.sqrt(l_var), p_mu_l, p_sigma_l, p_pi_l
+            ).mean()
+        elif self.library_kl == "batch":
+            kl_l = kl_divergence_batch_component(
+                l_mu, torch.sqrt(l_var), p_mu_l, p_sigma_l, batch_labels
+            ).mean()
+        else:
+            kl_l = kl_divergence_gmm(l_pi, l_mu, l_var, p_mu_l, p_sigma_l, p_pi_l).mean()
 
         p_mu_z, p_logvar_z, p_pi_z = self.gmm_prior_z()
         kl_z_total, pieces = gmvae_kl_with_mmd(

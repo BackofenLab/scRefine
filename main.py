@@ -253,6 +253,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.05,
         help="maximum KL annealing weight",
     )
+    training_args.add_argument(
+        "--library_kl",
+        type=str,
+        choices=["original", "marginalized", "batch"],
+        default="original",
+        help="library-size KL variant: 'original' sums every component's KL (variance passed as std dev); 'marginalized' weights each component's KL by q_pi; 'batch' only uses the KL of each cell's batch-label component, matching how the library is sampled",
+    )
+    training_args.add_argument(
+        "--shared_base_prior",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="parameterize the library and z GMM priors as a shared base plus per-component deviations (default); pass --no-shared_base_prior for independent per-component parameters",
+    )
 
     cleanup_args = parser.add_argument_group("cleanup")
     cleanup_args.add_argument(
@@ -402,6 +415,8 @@ def run_training(args: argparse.Namespace) -> None:
         gene_contrastive_temperature=args.gene_contrastive_temperature,
         gene_contrastive_bandwidth=args.gene_contrastive_bandwidth,
         gene_contrastive_cross_batch_only=args.gene_contrastive_cross_batch_only,
+        library_kl=args.library_kl,
+        shared_base_prior=args.shared_base_prior,
     )
 
 def run_cleanup(args: argparse.Namespace) -> None:

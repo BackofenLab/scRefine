@@ -84,10 +84,12 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
              save_embedding = "embedding.npz",
              model_checkpoint = "model.ckpt", count_symbol = None, random_assignment = False,
              use_gene_contrastive = False, gene_contrastive_temperature = 0.5,
-             gene_contrastive_bandwidth = None, gene_contrastive_cross_batch_only = True):
+             gene_contrastive_bandwidth = None, gene_contrastive_cross_batch_only = True,
+             library_kl = "original", shared_base_prior = True):
     """
-    Trains an `HVAE_Lightning` model (whose GMM priors parameterize each component's
-    mean/(log-variance or log-std) as a shared base plus a per-component deviation) on
+    Trains an `HVAE_Lightning` model (whose GMM priors optionally parameterize each
+    component's mean/(log-variance or log-std) as a shared base plus a per-component
+    deviation, see `shared_base_prior`) on
     single-cell data: builds domain-aware DataLoaders, fits the model with early stopping
     on training loss, saves the model checkpoint, and embeds all cells.
 
@@ -139,6 +141,10 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
             compares cross-batch pairs (batch-integration signal). If False, all pairs are
             compared by marker-gene-expression similarity regardless of batch, favoring
             cell-type structure over batch alignment.
+        library_kl (str, optional): Library-size KL variant passed to `HVAE_Lightning`:
+            `"original"`, `"marginalized"` or `"batch"`.
+        shared_base_prior (bool, optional): Parameterize the GMM priors as a shared base
+            plus per-component deviations (True) or independently per component (False).
 
     Returns:
         None
@@ -163,7 +169,8 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
                             use_gene_contrastive = use_gene_contrastive,
                             gene_contrastive_temperature = gene_contrastive_temperature,
                             gene_contrastive_bandwidth = gene_contrastive_bandwidth,
-                            gene_contrastive_cross_batch_only = gene_contrastive_cross_batch_only)
+                            gene_contrastive_cross_batch_only = gene_contrastive_cross_batch_only,
+                            library_kl = library_kl, shared_base_prior = shared_base_prior)
     model.to(device)
     model.get_dataset_baseline(info.lib_sizes, info.batch_ids, n_batch = info.n_batches)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
