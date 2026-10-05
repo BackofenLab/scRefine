@@ -172,13 +172,13 @@ def build_parser() -> argparse.ArgumentParser:
     training_args.add_argument(
         "--gene_factor",
         type=int,
-        default=50,
+        default=10,
         help="weight for marker genes",
     )
     training_args.add_argument(
         "--use_gene_contrastive",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help="use NT-Xent contrastive learning directly on log-normalized marker-gene expression, instead of the MSE-based classifier head over binned expression",
     )
     training_args.add_argument(
@@ -257,7 +257,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--library_kl",
         type=str,
         choices=["original", "marginalized", "batch"],
-        default="original",
+        default="marginalized",
         help="library-size KL variant: 'original' sums every component's KL (variance passed as std dev); 'marginalized' weights each component's KL by q_pi; 'batch' only uses the KL of each cell's batch-label component, matching how the library is sampled",
     )
     training_args.add_argument(
