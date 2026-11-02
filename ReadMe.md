@@ -1,9 +1,30 @@
 # scRefine
 
-**Motivation** Variational autoencoders (VAEs) have become useful tools for learning meaningful latent representations of high-dimensional biological data, making them particularly useful for analyzing single-cell transcriptomic profiles. In the context of immune cell data, scVAEs can capture complex cellular heterogeneity, enabling the discovery of rare immune subpopulations and the identification of subtle transcriptional shifts during immune responses. 
-Given the highly dynamic nature of immune cells, which transition between states in response to pathogens, inflammation, or disease, traditional clustering methods often struggle to capture continuous trajectories and subtle variations. By leveraging scVAEs, we can learn low-dimensional representations that preserve biologically relevant structures, facilitating better characterization of immune cell states and their functional roles. Additionally we introduce a novel approach to integrating data from different batches. 
+Batch-corrected latent representations of single-cell RNA-seq data with a hierarchical
+VAE (HVAE), followed by confidence-based filtering of the resulting embedding.
 
-**installing scRefine**
+The pipeline has three stages, all run by `main.py`:
+
+1. **Preprocessing** (`preprocessing/create_data.py`): loads the marker-gene list and
+   optionally selects HVGs / splits the data (both disabled in the standard run).
+2. **Training** (`train_hvae.py`, `models/vae.py`): a ZINB-decoder VAE with
+   - learnable GMM priors over the latent `z` and the per-batch library size, where each
+     component's parameters are a shared base plus a per-component deviation
+     (`--no-shared_base_prior` for independent per-component parameters),
+   - a library-size KL selectable with `--library_kl`: `original` (default; sums every
+     component's KL), `marginalized` (weights each component's KL by `q_pi`) or `batch`
+     (only each cell's batch-label component, matching how the library is sampled),
+   - optionally (`--decoder_covariates`) the batch embedding injected into the decoder,
+   - an RBF-kernel MMD term between `q(z)` and the prior (batch integration),
+   - a marker-gene contrastive head: an NT-Xent loss on a projection of `z` in which
+     pairs of cells are weighted as positives by a Laplacian kernel over their
+     log-normalized expression of each marker gene, averaged over marker genes,
+   - a linearly annealed KL weight.
+
+   Minibatches are built by a domain-aware sampler (`dataset/sampler.py`).
+3. **Cleanup** (`clean_data.py`, `plotting.py`): Leiden clustering + t-SNE of the
+   embedding, a radius-neighbors confidence model, and per-cluster filtering of
+   low-confidence cells. Writes Plotly HTML plots.
 
 ## Installation
 
@@ -25,7 +46,6 @@ If this prints `False` on a GPU machine, your NVIDIA driver is likely too old fo
 12.6. Change `cu126` in `environment.yml` to a CUDA version your driver supports (see
 https://pytorch.org/get-started).
 
-
 ## Input
 
 An `.h5ad` file with raw counts in `.X`, and in `.obs`:
@@ -36,33 +56,96 @@ An `.h5ad` file with raw counts in `.X`, and in `.obs`:
 The marker genes in `marker_genes.txt` (one symbol per line) should be present in
 `var_names`. Replace the file to use a different marker panel.
 
+## Running
 
-
-#### Docker
-tbd
-
-
-
-
-**running scRefine**
-
-#### Example
-```
-python main.py \
---dataset_path {path_to_input_adata} \
---dataset_symbol {symbol for dataset integration} \
---no_hvg \
---no-split_data \
---label_symbols {symbol for labels to be saved} \
---output {output embedding} \
---filtered_data_output "{filtered output embedding} \
---conf_data {output embedding with prediction confidence} \
---plots {base name for potting}  \
---marker_genes {marker gene text file} \
---epochs {max number of training epochs} 
+```bash
+./run.sh /path/to/data.h5ad          # seed 42
+./run.sh /path/to/data.h5ad 1        # another seed
+./run.sh /path/to/data.h5ad 42 --epochs 100 --no_plots   # extra main.py arguments
 ```
 
-run with *--no_hvg* and *--no_split_data* to not use hvg-selection and not split the data into training/testing partitions. 
+Edit `DATASET_SYMBOL` / `LABEL_SYMBOL` at the top of `run.sh` to match your data. Outputs
+go to the current working directory. See `python main.py --help` for all options.
+
+### Presets
+
+`--preset` selects a named parameter set from `PRESETS` in `main.py`:
+
+| Preset | Setting | Marker-gene head | Differs from the other preset in |
+| --- | --- | --- | --- |
+| `1` | contrastive | NT-Xent loss on a projection of `z` (`use_gene_contrastive=True`, temperature 0.5) | `encode_covariates=True`, `shared_base_prior=True` |
+| `2` | classifier | linear head predicting binned marker-gene expression, MSE loss (`use_gene_contrastive=False`) | `encode_covariates=False`, `shared_base_prior=False` |
+
+Both presets share the remaining values: 50 epochs, latent dimension 90, hidden dimension
+128, 1 layer, learning rate 0.001, batch size 255, patience 15, `kl_weight` 0.001
+(annealed to 0.05 over 20 epochs), `mmd_weight` 0.1, `reconstruction_weight` 1.0,
+`gene_factor` 50, `library_kl=original`, no decoder covariates, and cleanup with
+`cluster_min` 0.2, `quantil` 0.2, `quantil_max` 0.3.
+
+A preset only replaces the parser defaults; any argument passed explicitly on the command
+line still takes precedence:
+
+```bash
+python main.py --preset 2 --epochs 100 ...   # preset 2, but trained for 100 epochs
+```
+
+Note that `run.sh` passes several of these arguments explicitly (including
+`--use_gene_contrastive`), so they override a preset given as an extra argument. To run
+preset `2` through `run.sh`, also pass `--no-use_gene_contrastive`, or call `main.py`
+directly.
+
+## Label-supervised alternatives (SimCLR / classification)
+
+The scripts learn an embedding directly from existing
+hard labels, such as cell-type annotations. Both read the same `.h5ad` input (raw counts
+in `.X`).
+
+### SimCLR-style contrastive embedding (`train_simclr.py`)
+
+An MLP `Encoder` (`models/encoder.py`) is trained with a supervised NT-Xent loss: within
+a minibatch, cells that share a label in `--label_symbol` are positives and all other
+cells are negatives. Minibatches are plain shuffled batches with no domain-aware
+sampling and no batch-correction term. Only a random `--sample_fraction` of the cells
+(default 0.1) is used for training. All cells are embedded afterwards.
+
+```bash
+python train_simclr.py --data_path data.h5ad --dataset_symbol dataset \
+  --label_symbol azimuth_final_level_label --epochs 100 \
+  --embedding_save embedding_simclr.npz --plot_name simclr_tsne
+```
+
+Writes the embedding `.npz` (`embedding`, `labels`, `batches`, `obs_names`, same layout as
+the HVAE output), the encoder weights (`--contrastive_model`), and optionally a t-SNE plot
+(`--plot_name`). Other options: `--latent_dim` (default 1024), `--batch_size` (32),
+`--temperature` (0.5).
+
+### Classification / clustering on the embedding (`classify.py`)
+
+`classify.py` first trains the SimCLR embedding above on `--data_path` (an `.h5ad`, with
+the same SimCLR options). It saves the embedding to `--embedding_save` and then evaluates
+it, depending on `--run_type`:
+
+- `nn` (default): trains a small MLP classifier (`models/classifier.py`) on the embedding
+  to predict the labels (90/10 train/validation split) and prints train/validation
+  accuracy per epoch. Saves the classifier weights to `--model_path` and the
+  validation labels, predictions and raw outputs to `--evaluation` (written with
+  `np.savez`, so give it an `.npz` name).
+- `kmeans`: runs K-Means for several cluster counts and maps each cluster to the
+  majority label of 50 sampled cells. It then fits a k-NN classifier on these pseudo-labels
+  and prints accuracy, weighted F1 and silhouette scores against the true labels.
+- `predict`: skips training. It loads an existing embedding (`--embedding_save`) and
+  classifier (`--model_path`) and saves the predicted label indices to `--evaluation`
+  (`.npy`).
+
+```bash
+python classify.py --data_path data.h5ad --dataset_symbol dataset \
+  --label_symbol azimuth_final_level_label --epochs 100 --run_type nn \
+  --embedding_save embedding_simclr.npz --model_path classifier.pth \
+  --evaluation classification.npz
+```
+
+Because both approaches are supervised by the labels, they only work on data that is
+already annotated. 
 
 ## Outputs
 
@@ -75,34 +158,3 @@ With prefix `screfine_seed<SEED>`:
 | `<prefix>_conf.npz` | embedding with per-cell confidence and t-SNE coordinates |
 | `<prefix>_filtered.npz` | cells kept after confidence filtering |
 | `plots_<prefix>_*.html` | t-SNE plots (skipped with `--no_plots`) |
-
-
-**contrastive learning**
-
-use train_simclr.py to create a contrastive learning model.
-
-#### Example
-
-```
-python train_simclr.py \
---data_path {input h5ad} \
---dataset_symbol {symbol for the dataset} \
---label_symbol {symbol to be used for the contrastive training} \
---plot_name {plot_name if needed} \
---epochs {number of epochs to train} \
-
-```
-
-**classification**
-
-#### Example
-
-```
-python classify.py \
---data_path {path_to_data}\
---dataset_symbol {batch data to save} \
---label_symbol {label data used for training} \
---epochs {number of epochs to train} \
-```
-
-

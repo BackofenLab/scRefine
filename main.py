@@ -8,6 +8,65 @@ from clean_data import clean_up
 from preprocessing.create_data import preprocessing, load_marker_genes
 from train_hvae import main as train_hvae_main
 
+# Named parameter sets selected with `--preset`. A preset replaces the parser defaults of the
+# listed arguments; any argument given explicitly on the command line still overrides it.
+PRESETS = {
+    # 1: contrastive setting (NT-Xent marker-gene head)
+    "1": dict(
+        epochs=50,
+        latent_dimension=90,
+        hidden_dimension=128,
+        layers=1,
+        learning_rate=0.001,
+        batch_size=255,
+        patience=15,
+        encode_covariates=True,
+        ln=False,
+        kl_weight=0.001,
+        mmd_weight=0.1,
+        reconstruction_weight=1.0,
+        kl_anneal_warmup_epochs=20,
+        kl_anneal_max=0.05,
+        library_kl="marginalized",
+        shared_base_prior=True,
+        decoder_covariates=False,
+        gene_factor=50,
+        use_gene_contrastive=True,
+        gene_contrastive_temperature=0.5,
+        gene_contrastive_bandwidth=None,
+        gene_contrastive_cross_batch_only=False,
+        cluster_min=0.2,
+        quantil=0.2,
+        quantil_max=0.3,
+    ),
+    # 2: classifier setting (MSE head over binned marker-gene expression)
+    "2": dict(
+        epochs=50,
+        latent_dimension=90,
+        hidden_dimension=128,
+        layers=1,
+        learning_rate=0.001,
+        batch_size=255,
+        patience=15,
+        encode_covariates=False,
+        ln=False,
+        kl_weight=0.001,
+        mmd_weight=0.1,
+        reconstruction_weight=1.0,
+        kl_anneal_warmup_epochs=20,
+        kl_anneal_max=0.05,
+        library_kl="original",
+        shared_base_prior=False,
+        decoder_covariates=False,
+        gene_factor=50,
+        use_gene_contrastive=False,
+        cluster_min=0.2,
+        quantil=0.2,
+        quantil_max=0.3,
+    ),
+}
+
+
 def print_banner(message: str) -> None:
     """Print `message` centered in a row of `#` characters, to mark pipeline stages."""
     print(f"#################################### {message} #########################################")
@@ -154,7 +213,7 @@ def build_parser() -> argparse.ArgumentParser:
     training_args.add_argument(
         "--learning_rate",
         type=float,
-        default=0.0001,
+        default=0.001,
         help="learning rate",
     )
     training_args.add_argument(
@@ -178,7 +237,7 @@ def build_parser() -> argparse.ArgumentParser:
     training_args.add_argument(
         "--use_gene_contrastive",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="use NT-Xent contrastive learning directly on log-normalized marker-gene expression, instead of the MSE-based classifier head over binned expression",
     )
     training_args.add_argument(
@@ -257,7 +316,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--library_kl",
         type=str,
         choices=["original", "marginalized", "batch"],
-        default="marginalized",
+        default="original",
         help="library-size KL variant: 'original' sums every component's KL (variance passed as std dev); 'marginalized' weights each component's KL by q_pi; 'batch' only uses the KL of each cell's batch-label component, matching how the library is sampled",
     )
     training_args.add_argument(
@@ -265,6 +324,12 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="parameterize the library and z GMM priors as a shared base plus per-component deviations (default); pass --no-shared_base_prior for independent per-component parameters",
+    )
+    training_args.add_argument(
+        "--decoder_covariates",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="inject the batch covariate embedding into the decoder, so batch effects can be explained by the decoder instead of being encoded in z",
     )
 
     cleanup_args = parser.add_argument_group("cleanup")
@@ -347,8 +412,27 @@ def build_parser() -> argparse.ArgumentParser:
         default=42,
         help="random seed for Python/NumPy/PyTorch (enables multi-seed runs)",
     )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        choices=sorted(PRESETS),
+        default=None,
+        help="parameter set from PRESETS (1: contrastive, 2: classifier); explicitly given arguments override it",
+    )
 
     return parser
+
+
+def parse_args(parser: argparse.ArgumentParser, argv: list[str] | None = None) -> argparse.Namespace:
+    """
+    Parses the CLI args, with the defaults of `--preset` (if given) applied before the
+    explicitly passed arguments, so those still take precedence over the preset.
+    """
+    preset = parser.parse_known_args(argv)[0].preset
+    if preset is not None:
+        parser.set_defaults(**PRESETS[preset])
+        print(f"using preset {preset}: {PRESETS[preset]}")
+    return parser.parse_args(argv)
 
 
 def run_preprocessing(args: argparse.Namespace) -> None:
@@ -417,6 +501,7 @@ def run_training(args: argparse.Namespace) -> None:
         gene_contrastive_cross_batch_only=args.gene_contrastive_cross_batch_only,
         library_kl=args.library_kl,
         shared_base_prior=args.shared_base_prior,
+        decoder_covariates=args.decoder_covariates,
     )
 
 def run_cleanup(args: argparse.Namespace) -> None:
@@ -440,7 +525,7 @@ def run_cleanup(args: argparse.Namespace) -> None:
 def main() -> None:
     """Entry point: parses CLI args and runs preprocessing, HVAE training, then cleanup in order."""
     parser = build_parser()
-    args = parser.parse_args()
+    args = parse_args(parser)
     set_seed(args.seed)
     run_preprocessing(args)
     run_training(args)
