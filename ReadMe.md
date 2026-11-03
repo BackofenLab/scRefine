@@ -76,12 +76,6 @@ go to the current working directory. See `python main.py --help` for all options
 | `1` | contrastive | NT-Xent loss on a projection of `z` (`use_gene_contrastive=True`, temperature 0.5) | `encode_covariates=True`, `shared_base_prior=True` |
 | `2` | classifier | linear head predicting binned marker-gene expression, MSE loss (`use_gene_contrastive=False`) | `encode_covariates=False`, `shared_base_prior=False` |
 
-Both presets share the remaining values: 50 epochs, latent dimension 90, hidden dimension
-128, 1 layer, learning rate 0.001, batch size 255, patience 15, `kl_weight` 0.001
-(annealed to 0.05 over 20 epochs), `mmd_weight` 0.1, `reconstruction_weight` 1.0,
-`gene_factor` 50, `library_kl=original`, no decoder covariates, and cleanup with
-`cluster_min` 0.2, `quantil` 0.2, `quantil_max` 0.3.
-
 A preset only replaces the parser defaults; any argument passed explicitly on the command
 line still takes precedence:
 
