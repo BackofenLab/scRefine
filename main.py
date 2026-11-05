@@ -6,7 +6,7 @@ import torch
 
 from clean_data import clean_up
 from preprocessing.create_data import preprocessing, load_marker_genes
-from train_hvae import main as train_hvae_main
+from train_hvae import check_no_incomplete_run, main as train_hvae_main
 
 # Named parameter sets selected with `--preset`. A preset replaces the parser defaults of the
 # listed arguments; any argument given explicitly on the command line still overrides it.
@@ -18,7 +18,7 @@ PRESETS = {
         hidden_dimension=128,
         layers=1,
         learning_rate=0.001,
-        batch_size=255,
+        batch_size=33,
         patience=15,
         encode_covariates=True,
         ln=False,
@@ -27,7 +27,7 @@ PRESETS = {
         reconstruction_weight=1.0,
         kl_anneal_warmup_epochs=20,
         kl_anneal_max=0.05,
-        library_kl="marginalized",
+        library_kl="original",
         shared_base_prior=True,
         decoder_covariates=False,
         gene_factor=50,
@@ -46,9 +46,9 @@ PRESETS = {
         hidden_dimension=128,
         layers=1,
         learning_rate=0.001,
-        batch_size=255,
+        batch_size=33,
         patience=15,
-        encode_covariates=False,
+        encode_covariates=True,
         ln=False,
         kl_weight=0.001,
         mmd_weight=0.1,
@@ -187,6 +187,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="output model",
     )
     training_args.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="continue an aborted run from its checkpoint, with the same arguments (only --epochs may change)",
+    )
+    training_args.add_argument(
+        "--checkpoint_every_n_epochs",
+        type=int,
+        default=1,
+        help="how often to save the checkpoint used by --resume",
+    )
+    training_args.add_argument(
         "--epochs",
         type=int,
         default=50,
@@ -219,8 +231,8 @@ def build_parser() -> argparse.ArgumentParser:
     training_args.add_argument(
         "--batch_size",
         type=int,
-        default=255,
-        help="batch size",
+        default=33,
+        help="minibatch size for training and embedding",
     )
     training_args.add_argument(
         "--patience",
@@ -451,22 +463,25 @@ def run_preprocessing(args: argparse.Namespace) -> None:
     )
 
 
+def training_input_path(args: argparse.Namespace) -> str:
+    """
+    Returns the appropriate training input: the raw dataset when `no_hvg` and not
+    `split_data`, the full HVG output when only `no_hvg` is False, or the reference split
+    when `split_data` is True.
+    """
+    if args.no_hvg == True and args.split_data == False:
+        return args.dataset_path
+    elif args.split_data == False and args.no_hvg == False:
+        return args.output_h5ad + ".h5ad"
+    return args.output_h5ad + "_ref.h5ad"
+
+
 def run_training(args: argparse.Namespace) -> None:
-    """
-    Trains the HVAE (`models/vae.py`) on the appropriate preprocessing output: the raw
-    dataset when `no_hvg` and not `split_data`, the full HVG output when only `no_hvg` is
-    False, or the reference split when `split_data` is True.
-    """
+    """Trains the HVAE (`models/vae.py`) on the output of `training_input_path`."""
     print_banner("training (HVAE)")
 
     gene_names = load_marker_genes(args.marker_genes)
-
-    if args.no_hvg == True and args.split_data == False:
-        train_data = args.dataset_path
-    elif args.split_data == False and args.no_hvg == False:
-        train_data = args.output_h5ad
-    elif args.split_data == True:
-        train_data = args.output_h5ad + "_ref.h5ad"
+    train_data = training_input_path(args)
 
     train_hvae_main(
         train_data_name=train_data,
@@ -493,6 +508,8 @@ def run_training(args: argparse.Namespace) -> None:
         kl_anneal_warmup_epochs=args.kl_anneal_warmup_epochs,
         kl_anneal_max=args.kl_anneal_max,
         model_checkpoint=args.model,
+        resume=args.resume,
+        checkpoint_every_n_epochs=args.checkpoint_every_n_epochs,
         count_symbol=args.count_symbol,
         random_assignment=args.random_assignment,
         use_gene_contrastive=args.use_gene_contrastive,
@@ -526,8 +543,12 @@ def main() -> None:
     """Entry point: parses CLI args and runs preprocessing, HVAE training, then cleanup in order."""
     parser = build_parser()
     args = parse_args(parser)
+    check_no_incomplete_run(args.model, args.resume)
     set_seed(args.seed)
-    run_preprocessing(args)
+    if args.resume and os.path.exists(training_input_path(args)):
+        print("Resuming: keeping the existing preprocessing output.")
+    else:
+        run_preprocessing(args)
     run_training(args)
     run_cleanup(args)
 

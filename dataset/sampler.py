@@ -23,6 +23,9 @@ class DomainBatchSampler(Sampler):
             device (torch.device, optional): Device for the index tensors. Defaults to GPU
                 if available.
         """
+        if batch_size < min_batch_size:
+            raise ValueError(f"batch_size ({batch_size}) must be at least min_batch_size "
+                             f"({min_batch_size}); every minibatch would be dropped")
         self.domain_ids = domain_ids
         self.batch_size = batch_size
         self.p_intra_domain = p_intra_domain

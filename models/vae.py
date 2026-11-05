@@ -1052,7 +1052,9 @@ class HVAE_Lightning(pl.LightningModule):
         Returns:
             Tensor: The scalar training loss for this batch.
         """
-        x, _, covariates, gene = batch if self.encode_covariates else (batch, None)
+        # The batch labels are needed even when encode_covariates=False: `forward` uses them
+        # for the per-batch library baseline.
+        x, _, covariates, gene = batch
 
         output = self(x, gene, covariates)
         loss_dict = self.compute_loss(x, output, gene, batch_labels=covariates)
