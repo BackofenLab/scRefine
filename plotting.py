@@ -12,7 +12,7 @@ def plot_tsne(projections, batches, name):
     """
     fig = px.scatter(
         projections, x=0, y=1,
-        color=batches, labels={'color': 'batches'}
+        color=batches, labels={'color': 'value'}
     )
     fig.write_html(name)
     return
