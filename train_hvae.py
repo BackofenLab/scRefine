@@ -188,7 +188,7 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
              use_gene_contrastive = False, gene_contrastive_temperature = 0.5,
              gene_contrastive_bandwidth = None, gene_contrastive_cross_batch_only = True,
              library_kl = "original", shared_base_prior = True, decoder_covariates = False,
-             resume = False, checkpoint_every_n_epochs = 1,
+             encoder_log_normalize = False, resume = False, checkpoint_every_n_epochs = 1,
             enable_progress_bar = True):
     """
     Trains an `HVAE_Lightning` model (whose GMM priors optionally parameterize each
@@ -248,6 +248,8 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
             plus per-component deviations (True) or independently per component (False).
         decoder_covariates (bool, optional): Inject the batch covariate embedding into the
             decoder, so batch effects can be explained by the decoder instead of `z`.
+        encoder_log_normalize (bool, optional): Encode `log1p(CP10k)` instead of raw counts
+            (the ZINB loss still uses raw counts); see `HVAE_Lightning`.
         enable_progress_bar (bool, optional): Show the Lightning per-step progress bar.
         resume (bool, optional): Continue from the checkpoint of an aborted run. If training
             had already finished (only `model_checkpoint` exists), the model is loaded and
@@ -298,7 +300,8 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
                             gene_contrastive_bandwidth = gene_contrastive_bandwidth,
                             gene_contrastive_cross_batch_only = gene_contrastive_cross_batch_only,
                             library_kl = library_kl, shared_base_prior = shared_base_prior,
-                            decoder_covariates = decoder_covariates)
+                            decoder_covariates = decoder_covariates,
+                            encoder_log_normalize = encoder_log_normalize)
     model.to(device)
     model.get_dataset_baseline(info.lib_sizes, info.batch_ids, n_batch = info.n_batches)
 

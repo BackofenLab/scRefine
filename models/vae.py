@@ -705,6 +705,7 @@ class HVAE_Lightning(pl.LightningModule):
         library_kl="original",       # "original", "marginalized" or "batch"
         shared_base_prior=True,      # shared-base + per-component-deviation GMM priors
         decoder_covariates=False,    # if True, inject the batch embedding into the decoder
+        encoder_log_normalize=False, # if True, encode log1p(CP10k) instead of raw counts
     ):
         """
         Args:
@@ -767,6 +768,12 @@ class HVAE_Lightning(pl.LightningModule):
             decoder_covariates (bool, optional): Inject the batch covariate embedding into
                 every decoder layer, so batch-specific expression can be explained by the
                 decoder instead of having to be encoded in `z`.
+            encoder_log_normalize (bool, optional): Feed the `z` encoder
+                `log1p(x / library * 1e4)` instead of raw counts, so `z` doesn't see
+                sequencing depth (the ZINB loss still uses raw counts). The library encoder
+                then also gets each cell's log library size relative to its batch baseline,
+                so within-batch depth variation can still be reconstructed while depth
+                differences between batches are left to `loglib_baseline_per_batch`.
         """
         super().__init__()
         self.save_hyperparameters()
@@ -781,7 +788,9 @@ class HVAE_Lightning(pl.LightningModule):
         self.lr = lr
 
         self.z_encoder = EncoderHVAE(input_dim, n_latent, n_layers=n_layers)
-        self.l_encoder = EncoderHVAE2(n_latent, num_components, n_layers=n_layers)
+        self.encoder_log_normalize = encoder_log_normalize
+        self.l_encoder = EncoderHVAE2(n_latent + (1 if encoder_log_normalize else 0),
+                                      num_components, n_layers=n_layers)
         self.decoder = DecoderHVAE3(n_latent, n_input, n_layers=n_layers, use_layer_norm=True,
                                     n_cont=20 if decoder_covariates else 0)
 
@@ -888,11 +897,19 @@ class HVAE_Lightning(pl.LightningModule):
         batch_labels = covariates
         covariates = self.cov_embedding(covariates) if covariates is not None else None
 
+        if self.encoder_log_normalize:
+            lib = x.sum(dim=1, keepdim=True).clamp_min(1.0)
+            x = torch.log1p(x / lib * 1e4)
+            rel_loglib = torch.log(lib)
+            if batch_labels is not None:
+                rel_loglib = rel_loglib - self.loglib_baseline_per_batch[batch_labels].unsqueeze(-1)
+
         if self.encode_covariates and covariates is not None:
             x = torch.cat([x, covariates], dim=-1)
 
         z_mu, z_var, z = self.z_encoder(x)
-        l_pi, l_mu, l_var = self.l_encoder(z_mu)
+        l_in = torch.cat([z_mu, rel_loglib], dim=-1) if self.encoder_log_normalize else z_mu
+        l_pi, l_mu, l_var = self.l_encoder(l_in)
 
         c = torch.multinomial(l_pi, num_samples=1).squeeze()
         std = torch.sqrt(l_var + 1e-8)                               # [B,K]

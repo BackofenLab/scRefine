@@ -343,6 +343,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="inject the batch covariate embedding into the decoder, so batch effects can be explained by the decoder instead of being encoded in z",
     )
+    training_args.add_argument(
+        "--encoder_log_normalize",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="feed the encoder log1p(counts / library * 1e4) instead of raw counts, so z doesn't encode sequencing depth; the ZINB loss still uses raw counts (input .X must be raw counts)",
+    )
 
     cleanup_args = parser.add_argument_group("cleanup")
     cleanup_args.add_argument(
@@ -519,6 +525,7 @@ def run_training(args: argparse.Namespace) -> None:
         library_kl=args.library_kl,
         shared_base_prior=args.shared_base_prior,
         decoder_covariates=args.decoder_covariates,
+        encoder_log_normalize=args.encoder_log_normalize,
     )
 
 def run_cleanup(args: argparse.Namespace) -> None:

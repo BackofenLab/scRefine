@@ -73,8 +73,8 @@ go to the current working directory. See `python main.py --help` for all options
 
 | Preset | Setting | Marker-gene head | Differs from the other preset in |
 | --- | --- | --- | --- |
-| `1` | mood1 | NT-Xent loss on a projection of `z` (`use_gene_contrastive=True`, temperature 0.5) | `encode_covariates=True`, `shared_base_prior=True` |
-| `2` | mood2 | linear head predicting binned marker-gene expression, MSE loss (`use_gene_contrastive=False`) | `encode_covariates=False`, `shared_base_prior=False` |
+| `1` | contrastive | NT-Xent loss on a projection of `z` (`use_gene_contrastive=True`, temperature 0.5) | `encode_covariates=True`, `shared_base_prior=True` |
+| `2` | classifier | linear head predicting binned marker-gene expression, MSE loss (`use_gene_contrastive=False`) | `encode_covariates=False`, `shared_base_prior=False` |
 
 A preset only replaces the parser defaults; any argument passed explicitly on the command
 line still takes precedence:
@@ -87,6 +87,16 @@ Note that `run.sh` passes several of these arguments explicitly (including
 `--use_gene_contrastive`), so they override a preset given as an extra argument. To run
 preset `2` through `run.sh`, also pass `--no-use_gene_contrastive`, or call `main.py`
 directly.
+
+
+### Cross-platform data
+
+For cross-platform data use `--encoder_log_normalize` to normalize inputs for the encoder. 
+
+```bash
+python main.py --preset 2 --encoder_log_normalize ### preset2 with log normalized data
+```
+
 
 ## Label-supervised alternatives (SimCLR / classification)
 
