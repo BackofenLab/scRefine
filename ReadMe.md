@@ -73,8 +73,8 @@ go to the current working directory. See `python main.py --help` for all options
 
 | Preset | Setting | Marker-gene head | Differs from the other preset in |
 | --- | --- | --- | --- |
-| `1` | contrastive | NT-Xent loss on a projection of `z` (`use_gene_contrastive=True`, temperature 0.5) | `encode_covariates=True`, `shared_base_prior=True` |
-| `2` | classifier | linear head predicting binned marker-gene expression, MSE loss (`use_gene_contrastive=False`) | `encode_covariates=False`, `shared_base_prior=False` |
+| `1` | mood1 | NT-Xent loss on a projection of `z` (`use_gene_contrastive=True`, temperature 0.5) | `encode_covariates=True`, `shared_base_prior=True` |
+| `2` | mood2 | linear head predicting binned marker-gene expression, MSE loss (`use_gene_contrastive=False`) | `encode_covariates=False`, `shared_base_prior=False` |
 
 A preset only replaces the parser defaults; any argument passed explicitly on the command
 line still takes precedence:
