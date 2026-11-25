@@ -520,7 +520,6 @@ class DecoderHVAE3(nn.Module):
         return px_scale, px_r, px_rate, px_dropout
         
         
-@torch.no_grad()
 def _mmd_rbf(x, y, sigmas=(0.5, 1.0, 2.0, 4.0, 8.0)):
     """
     Unbiased multi-scale RBF-kernel maximum mean discrepancy between two sample sets.
@@ -554,11 +553,76 @@ def _mmd_rbf(x, y, sigmas=(0.5, 1.0, 2.0, 4.0, 8.0)):
     return mmd
 
 
+BATCH_MMD_SCALES = ("fixed", "median", "standardized")
+
+
+def _scale_for_batch_mmd(z, scale, sigmas, rel_sigmas=(0.25, 0.5, 1.0, 2.0, 4.0)):
+    """
+    Prepares `z` and the RBF bandwidths for `batch_mmd`.
+
+    - `"fixed"`: `z` unchanged, bandwidths `sigmas` (original behavior). Not scale-invariant:
+      shrinking batch-informative directions of `z` below the smallest bandwidth lowers the
+      MMD without mixing batches, which can collapse the latent onto one batch-free axis.
+    - `"median"`: bandwidths `rel_sigmas` times the minibatch's median pairwise distance of
+      `z` (median heuristic, not detached). Invariant to rescaling `z` as a whole, but not
+      to shrinking single directions while another one stays large.
+    - `"standardized"`: each latent dimension is first standardized over the minibatch (not
+      detached, so per-dimension rescaling has no effect on the loss), then bandwidths as in
+      `"median"`.
+    """
+    if scale == "fixed":
+        return z, sigmas
+    if scale not in BATCH_MMD_SCALES:
+        raise ValueError(f"unknown batch_mmd_scale {scale!r}, choose from {BATCH_MMD_SCALES}")
+    if scale == "standardized":
+        z = (z - z.mean(dim=0, keepdim=True)) / (z.std(dim=0, keepdim=True) + 1e-4)
+    n = z.shape[0]
+    d2 = ((z.unsqueeze(1) - z.unsqueeze(0)) ** 2).sum(-1)
+    off = d2[~torch.eye(n, dtype=torch.bool, device=z.device)]
+    med = off.clamp_min(1e-12).sqrt().median().clamp_min(1e-6)
+    return z, tuple(med * r for r in rel_sigmas)
+
+
+def batch_mmd(z, batch_labels, sigmas=(0.5, 1.0, 2.0, 4.0, 8.0), min_cells=2, scale="fixed"):
+    """
+    Batch-integration MMD: for every batch present in the minibatch, the RBF-kernel MMD
+    between that batch's latent codes and those of all other cells in the minibatch,
+    averaged with weights proportional to the batch's cell count. Unlike the prior MMD in
+    `gmvae_kl_with_mmd`, this directly penalizes batch-specific structure in `z`.
+
+    One-vs-rest (instead of all batch pairs) because `DomainBatchSampler` minibatches are
+    ~70% one anchor batch, leaving only a few cells per other batch.
+
+    Args:
+        z (Tensor): Latent codes, shape (B, D).
+        batch_labels (Tensor): Integer batch id per cell, shape (B,).
+        sigmas (tuple[float], optional): RBF kernel bandwidths for `_mmd_rbf`.
+        min_cells (int, optional): Minimum cells required on both sides of a comparison.
+        scale (str, optional): How `z` and the bandwidths are scaled, see
+            `_scale_for_batch_mmd` (`"fixed"`, `"median"`, `"standardized"`).
+
+    Returns:
+        Tensor: Scalar weighted-mean MMD (0 if no batch can be compared).
+    """
+    batch_labels = batch_labels.view(-1)
+    z, sigmas = _scale_for_batch_mmd(z, scale, sigmas)
+    total = z.new_zeros(())
+    weight = 0
+    for b in torch.unique(batch_labels):
+        mask = batch_labels == b
+        n_in, n_out = int(mask.sum()), int((~mask).sum())
+        if n_in < min_cells or n_out < min_cells:
+            continue
+        total = total + n_in * _mmd_rbf(z[mask], z[~mask], sigmas=sigmas)
+        weight += n_in
+    return total / weight if weight > 0 else total
+
+
 def gmvae_kl_with_mmd(
     z_mu, z_logvar, logits_q_c,
     p_mu, p_logvar, p_pi,
     *, mmd_weight=0.1, mmd_sigmas=(0.5,1.0,2.0,4.0,8.0), reduction="mean",
-    sample_for_mmd=True
+    sample_for_mmd=True, mmd_grad=False
 ):
     """
     GMVAE-style latent loss: a component-marginalized Gaussian KL term (`kl_z_given_c` +
@@ -577,6 +641,10 @@ def gmvae_kl_with_mmd(
         reduction (str, optional): `"mean"` or `"sum"` over the batch for the KL terms.
         sample_for_mmd (bool, optional): Sample `z` from `q(z)` for the MMD term (True), or
             use `z_mu` directly (False).
+        mmd_grad (bool, optional): If False (default, original behavior), the MMD term is
+            computed under `torch.no_grad()`, so it only shifts the reported loss value and
+            never produces a gradient. If True, gradients flow through the MMD term into
+            the encoder, so it actually regularizes `q(z)` towards the prior.
 
     Returns:
         tuple: `(total, pieces)` where `total = kl_z_given_c + kl_c + mmd_weight * mmd`
@@ -618,7 +686,11 @@ def gmvae_kl_with_mmd(
     p_std_pick = (0.5 * p_logvar[c_idx]).exp()
     z_prior_sample = p_mu_pick + torch.randn_like(p_std_pick) * p_std_pick
 
-    mmd = _mmd_rbf(z_sample, z_prior_sample, sigmas=mmd_sigmas)
+    if mmd_grad:
+        mmd = _mmd_rbf(z_sample, z_prior_sample, sigmas=mmd_sigmas)
+    else:
+        with torch.no_grad():
+            mmd = _mmd_rbf(z_sample, z_prior_sample, sigmas=mmd_sigmas)
 
     if reduction == "mean":
         kl_z_given_c = kl_z_given_c.mean()
@@ -705,6 +777,9 @@ class HVAE_Lightning(pl.LightningModule):
         library_kl="original",       # "original", "marginalized" or "batch"
         shared_base_prior=True,      # shared-base + per-component-deviation GMM priors
         decoder_covariates=False,    # if True, inject the batch embedding into the decoder
+        mmd_grad=False,              # if True, gradients flow through the MMD term
+        batch_mmd_weight=0.0,        # weight of the batch-vs-rest MMD on z_mu (0 = off)
+        batch_mmd_scale="standardized",  # "standardized", "median" or "fixed" (see batch_mmd)
         encoder_log_normalize=False, # if True, encode log1p(CP10k) instead of raw counts
     ):
         """
@@ -768,6 +843,15 @@ class HVAE_Lightning(pl.LightningModule):
             decoder_covariates (bool, optional): Inject the batch covariate embedding into
                 every decoder layer, so batch-specific expression can be explained by the
                 decoder instead of having to be encoded in `z`.
+            mmd_grad (bool, optional): Let gradients flow through the MMD term (see
+                `gmvae_kl_with_mmd`). Default False keeps the original no-grad behavior.
+            batch_mmd_weight (float, optional): Weight of the batch-integration MMD
+                (`batch_mmd` on `z_mu`), added to the loss directly, i.e. not scaled by the
+                KL annealing weight or the 0.1 factor. 0 (default) disables it.
+            batch_mmd_scale (str, optional): Kernel scaling of the batch MMD (see
+                `_scale_for_batch_mmd`): `"standardized"` (default; only used when `batch_mmd_weight > 0`; per-dimension standardized
+                `z` + median-heuristic bandwidths), `"median"` (median-heuristic bandwidths)
+                or `"fixed"` (original fixed bandwidths).
             encoder_log_normalize (bool, optional): Feed the `z` encoder
                 `log1p(x / library * 1e4)` instead of raw counts, so `z` doesn't see
                 sequencing depth (the ZINB loss still uses raw counts). The library encoder
@@ -808,6 +892,9 @@ class HVAE_Lightning(pl.LightningModule):
         self.gmm_prior_z = LearnableGMMPriorZ(n_latent, num_components,
                                               shared_base=shared_base_prior).to(device)
         self.mmd_weight = mmd_weight
+        self.mmd_grad = mmd_grad
+        self.batch_mmd_weight = batch_mmd_weight
+        self.batch_mmd_scale = batch_mmd_scale
 
         self.use_gene_contrastive = use_gene_contrastive
         self.gene_contrastive_temperature = gene_contrastive_temperature
@@ -998,7 +1085,8 @@ class HVAE_Lightning(pl.LightningModule):
             mmd_weight=self.mmd_weight,
             mmd_sigmas=(0.5,1.0,2.0,4.0,8.0),
             reduction="mean",
-            sample_for_mmd=True
+            sample_for_mmd=True,
+            mmd_grad=self.mmd_grad
         )
 
 
@@ -1045,6 +1133,15 @@ class HVAE_Lightning(pl.LightningModule):
         kl_w = self._current_kl_weight()
         loss = (recon + kl_w * (kl_z_total + kl_l)) * 0.1 + self.gene_factor * gene_aux_loss
 
+        if self.batch_mmd_weight > 0:
+            if batch_labels is None:
+                raise ValueError("batch_mmd_weight > 0 requires batch_labels")
+            mmd_batch = batch_mmd(z_mu, torch.as_tensor(batch_labels, device=x.device),
+                                  scale=self.batch_mmd_scale)
+            loss = loss + self.batch_mmd_weight * mmd_batch
+        else:
+            mmd_batch = torch.zeros((), device=x.device)
+
         logs = {
             "recon": recon.detach(),
             "kl_z_total": (kl_w * kl_z_total).detach(),
@@ -1052,6 +1149,7 @@ class HVAE_Lightning(pl.LightningModule):
             "gene_aux": gene_aux_loss.detach(),
             "kl_weight_eff": torch.tensor(kl_w, device=x.device),
             "mmd": pieces["mmd"],
+            "mmd_batch": mmd_batch.detach(),
         }
         return {"train_loss": loss, **logs}
 
@@ -1076,11 +1174,16 @@ class HVAE_Lightning(pl.LightningModule):
         output = self(x, gene, covariates)
         loss_dict = self.compute_loss(x, output, gene, batch_labels=covariates)
 
-        self.log("train_loss", loss_dict["train_loss"], prog_bar=True)
+        # EarlyStopping monitors "train_loss": log it as the epoch mean (on_epoch=True), not the
+        # last minibatch's loss, which is noisy (esp. with the batch-MMD term) and made early
+        # stopping fire at random. The per-step value is still logged as "train_loss_step".
+        self.log("train_loss", loss_dict["train_loss"], on_step=False, on_epoch=True, prog_bar=True)
+        self.log("train_loss_step", loss_dict["train_loss"], on_step=True, on_epoch=False)
         self.log("train/recon", loss_dict["recon"], prog_bar=True)
         self.log("train/kl_z_total", loss_dict["kl_z_total"])
         self.log("train/kl_l", loss_dict["kl_l"])
         self.log("train/mmd", loss_dict["mmd"])
+        self.log("train/mmd_batch", loss_dict["mmd_batch"])
         self.log("train/gene_aux", loss_dict["gene_aux"])
         self.log("train/kl_weight_eff", loss_dict["kl_weight_eff"], prog_bar=True)
         return loss_dict["train_loss"]

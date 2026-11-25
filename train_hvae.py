@@ -188,7 +188,8 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
              use_gene_contrastive = False, gene_contrastive_temperature = 0.5,
              gene_contrastive_bandwidth = None, gene_contrastive_cross_batch_only = True,
              library_kl = "original", shared_base_prior = True, decoder_covariates = False,
-             encoder_log_normalize = False, resume = False, checkpoint_every_n_epochs = 1,
+             mmd_grad = False, batch_mmd_weight = 0.0, batch_mmd_scale = "standardized",
+             encoder_log_normalize = False, gene_target_transform = "log1p", resume = False, checkpoint_every_n_epochs = 1,
             enable_progress_bar = True):
     """
     Trains an `HVAE_Lightning` model (whose GMM priors optionally parameterize each
@@ -242,12 +243,23 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
             compares cross-batch pairs (batch-integration signal). If False, all pairs are
             compared by marker-gene-expression similarity regardless of batch, favoring
             cell-type structure over batch alignment.
+        gene_target_transform (str, optional): How the marker-gene targets are computed
+            (`"log1p"`, `"lognorm"`, `"lognorm_batch_rank"`, `"lognorm_batch_zscore"`),
+            see `dataset.dataloader.transform_marker_targets`. Applied before binning for
+            the MSE head; the batch-wise variants matter mainly for the contrastive head.
         library_kl (str, optional): Library-size KL variant passed to `HVAE_Lightning`:
             `"original"`, `"marginalized"` or `"batch"`.
         shared_base_prior (bool, optional): Parameterize the GMM priors as a shared base
             plus per-component deviations (True) or independently per component (False).
         decoder_covariates (bool, optional): Inject the batch covariate embedding into the
             decoder, so batch effects can be explained by the decoder instead of `z`.
+        mmd_grad (bool, optional): Let gradients flow through the MMD term. Default False
+            keeps the original behavior, where the MMD term is computed under no_grad and
+            only shifts the logged loss.
+        batch_mmd_weight (float, optional): Weight of the batch-vs-rest MMD on `z_mu`
+            (batch-integration term, see `models.vae.batch_mmd`). 0 (default) disables it.
+        batch_mmd_scale (str, optional): Kernel scaling of the batch MMD: `"standardized"`
+            (default; only used when `batch_mmd_weight > 0`), `"median"` or `"fixed"` (see `models.vae._scale_for_batch_mmd`).
         encoder_log_normalize (bool, optional): Encode `log1p(CP10k)` instead of raw counts
             (the ZINB loss still uses raw counts); see `HVAE_Lightning`.
         enable_progress_bar (bool, optional): Show the Lightning per-step progress bar.
@@ -285,6 +297,7 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
             batch_size=batch_size,
             p_intra_domain=0.7,
             bin_marker_genes=not use_gene_contrastive,
+            gene_target_transform=gene_target_transform,
             device=torch.device('cuda:0' if torch.cuda.is_available() else 'cpu'),
     )
 
@@ -301,6 +314,8 @@ def main(train_data_name, gene_names, dataset_symbol, label_symbols,
                             gene_contrastive_cross_batch_only = gene_contrastive_cross_batch_only,
                             library_kl = library_kl, shared_base_prior = shared_base_prior,
                             decoder_covariates = decoder_covariates,
+                            mmd_grad = mmd_grad, batch_mmd_weight = batch_mmd_weight,
+                            batch_mmd_scale = batch_mmd_scale,
                             encoder_log_normalize = encoder_log_normalize)
     model.to(device)
     model.get_dataset_baseline(info.lib_sizes, info.batch_ids, n_batch = info.n_batches)

@@ -5,6 +5,8 @@ import numpy as np
 import torch
 
 from clean_data import clean_up
+from dataset.dataloader import GENE_TARGET_TRANSFORMS
+from models.vae import BATCH_MMD_SCALES
 from preprocessing.create_data import preprocessing, load_marker_genes
 from train_hvae import check_no_incomplete_run, main as train_hvae_main
 
@@ -271,6 +273,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="only used with --use_gene_contrastive; if set (default), the contrastive loss only compares cross-batch pairs (batch-integration signal); pass --no-gene_contrastive_cross_batch_only to compare all pairs by marker-gene similarity regardless of batch, favoring cell-type structure over batch alignment",
     )
     training_args.add_argument(
+        "--gene_target_transform",
+        type=str,
+        choices=GENE_TARGET_TRANSFORMS,
+        default="log1p",
+        help="how marker-gene targets are computed: log1p (raw log1p(X), default/original), "
+             "lognorm (log1p(CP10k); used as-is if .X is already log-normalized), "
+             "lognorm_batch_rank (lognorm + per-batch rank in [0,1]), "
+             "lognorm_batch_zscore (lognorm + per-batch z-score)",
+    )
+    training_args.add_argument(
         "--encode_covariates",
         type=bool,
         default=True,
@@ -342,6 +354,28 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=False,
         help="inject the batch covariate embedding into the decoder, so batch effects can be explained by the decoder instead of being encoded in z",
+    )
+    training_args.add_argument(
+        "--mmd_grad",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="let gradients flow through the MMD term; by default (original behavior) the MMD term is computed under no_grad, so it only shifts the reported loss (and thus early stopping) without regularizing the latent space",
+    )
+    training_args.add_argument(
+        "--batch_mmd_weight",
+        type=float,
+        default=0.0,
+        help="weight of the batch-integration MMD: for each batch in a minibatch, MMD between its z_mu and all other cells' z_mu; added to the loss directly (not scaled by the KL annealing). 0 (default) disables it; 0.5 is the setting used for the cancer-to-liver runs",
+    )
+    training_args.add_argument(
+        "--batch_mmd_scale",
+        type=str,
+        choices=BATCH_MMD_SCALES,
+        default="standardized",
+        help="kernel scaling of the batch MMD, only used when --batch_mmd_weight > 0: standardized (default, per-dimension standardized "
+             "z_mu + median bandwidths), median (bandwidths from the minibatch median pairwise "
+             "distance) or fixed (original bandwidths 0.5-8 on raw z_mu; can be lowered by "
+             "shrinking the latent instead of mixing batches)",
     )
     training_args.add_argument(
         "--encoder_log_normalize",
@@ -525,7 +559,11 @@ def run_training(args: argparse.Namespace) -> None:
         library_kl=args.library_kl,
         shared_base_prior=args.shared_base_prior,
         decoder_covariates=args.decoder_covariates,
+        mmd_grad=args.mmd_grad,
+        batch_mmd_weight=args.batch_mmd_weight,
+        batch_mmd_scale=args.batch_mmd_scale,
         encoder_log_normalize=args.encoder_log_normalize,
+        gene_target_transform=args.gene_target_transform,
     )
 
 def run_cleanup(args: argparse.Namespace) -> None:
